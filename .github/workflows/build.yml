@@ -44,10 +44,10 @@ jobs:
           cp install.sh artifacts/install.sh
           sha256sum artifacts/install.sh > artifacts/install.sh.sha256
           cat > artifacts/INSTALL.txt <<'EOF'
-          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.12)
+          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.13)
           
           Run as root:
-            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.12/install.sh
+            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.13/install.sh
             sh /root/mdm-install.sh install
           
           To remove the installed app and restore files backed up by the installer:
@@ -67,13 +67,13 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish My Device Manager v0.2.12 with Wi-Fi client telemetry
+      - name: Publish My Device Manager v0.2.13 with Wi-Fi client telemetry
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.2.12
+          tag_name: v0.2.13
           target_commitish: ${{ github.sha }}
-          name: My Device Manager v0.2.12 — show live Wi-Fi client stats
+          name: My Device Manager v0.2.13 — show live Wi-Fi client stats
           overwrite_files: true
           generate_release_notes: true
           files: artifacts/*
@@ -92,9 +92,11 @@ jobs:
             underscores, so the helper now selects using that key and restores
             colon-separated MACs for matching. It also adds optional read-only
             hostapd station telemetry: Wi-Fi standard, channel, signal, RX/TX
-            link rates and current session byte counters. It does not change
-            wireless configuration or restart radio services. CI validates the
-            installer and generated patch paths. UFP remains optional and is not installed or
+            link rates and current session byte counters. Fixes the RPC parser to expand its per-device read loop for all Wi-Fi stats,
+            preventing telemetry from being concatenated into the UFP device-name
+            field. Installer checks now verify the expanded field list. It does
+            not change wireless configuration or restart radio services. CI
+            validates the installer and generated patch paths. UFP remains optional and is not installed or
             configured by this installer. Static DHCP labels cannot overwrite
             a live device hostname. Unknown clients show
             "Неизвестное устройство" instead of a generated Wi-Fi-band/MAC label.
