@@ -56,6 +56,9 @@ jobs:
         run: |
           set -euo pipefail
           cd "$SDK_DIR"
+          # The SDK carries feed indexes but not necessarily the feed source tree.
+          # Fetch LuCI itself so feeds/luci/luci.mk is available for package builds.
+          ./scripts/feeds update luci
           PACKAGE_DIR="package/luci-app-my-device-manager"
           mkdir -p "$PACKAGE_DIR"
           cp -a "$SOURCE_DIR/luci-app-my-device-manager/." "$PACKAGE_DIR/"
