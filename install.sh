@@ -166,6 +166,8 @@ apply_mdns_discovery_patch() {
             die "Не найдено поле hostname в RPC-ответе."
         [ "$(grep -Fc '    local raw merged section mac name band down up iface lease_ip dns_name dhcp_mode host_section' "$backend_file" || true)" = "1" ] ||
             die "Не найден список локальных переменных RPC-обработчика."
+        [ "$(grep -Fc '            for (i=1; i<=n; i++) {' "$backend_file" || true)" = "1" ] ||
+            die "Не найден цикл формирования итогового списка устройств."
 
         mdns_helper="$tmp_dir/mdns-helper.sh"
         mdns_patch="$tmp_dir/mdns-backend.awk"
@@ -335,9 +337,25 @@ MDM_MDNS_HELPER
         next
     }
 
+    if ($0 == "            for (i=1; i<=n; i++) {") {
+        print "            for (i=1; i<=n; i++) {"
+        print "                m=order[i];"
+        print "                if (online[m] == 1 && ip[m] ~ /^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$/) {"
+        print "                    key=ip[m] SUBSEP m;"
+        print "                    if (!ip_mac_seen[key]++) ip_mac_count[ip[m]]++;"
+        print "                }"
+        print "            }"
+        print ""
+        print $0
+        next
+    }
+
     if (index($0, "mode[m];") > 0 && index($0, "printf") > 0) {
-        print "                preferred=service_label[ip[m]];"
-        print "                if (preferred == \"\") preferred=mdns_hostname[ip[m]];"
+        print "                preferred=\"\";"
+        print "                if (online[m] == 1 && ip[m] ~ /^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$/ && ip_mac_count[ip[m]] == 1) {"
+        print "                    preferred=service_label[ip[m]];"
+        print "                    if (preferred == \"\") preferred=mdns_hostname[ip[m]];"
+        print "                }"
         print "                printf \"%s|%s|%s|%s|%d|%d|%s|%s|%s|%s|%s|%s|%s\\n\", m, ip[m], host[m], iface[m], online[m]+0, registered[m]+0, name[m], band[m], down[m], up[m], dns[m], mode[m], preferred;"
         next
     }
