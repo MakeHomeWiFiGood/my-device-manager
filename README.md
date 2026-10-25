@@ -9,7 +9,7 @@ For unregistered clients, the interface first uses a readable name announced by 
 Run these commands in an SSH session as `root` on the router:
 
 ```sh
-wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.10/install.sh
+wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.11/install.sh
 sh /root/mdm-install.sh check
 sh /root/mdm-install.sh install
 ```
