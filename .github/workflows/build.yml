@@ -1,0 +1,101 @@
+name: Build OpenWrt package
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mdm-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Restore and validate source bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat source/bundle.part{01..09} > "$RUNNER_TEMP/mdm-source.tar.gz.b64"
+          base64 --decode "$RUNNER_TEMP/mdm-source.tar.gz.b64" > "$RUNNER_TEMP/mdm-source.tar.gz"
+          gzip -t "$RUNNER_TEMP/mdm-source.tar.gz"
+          mkdir -p "$RUNNER_TEMP/mdm-source"
+          tar -xzf "$RUNNER_TEMP/mdm-source.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/mdm-source"
+          "$RUNNER_TEMP/mdm-source/check-source.sh"
+          echo "SOURCE_DIR=$RUNNER_TEMP/mdm-source" >> "$GITHUB_ENV"
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev rsync unzip file wget curl zstd python3 nodejs
+
+      - name: Download and verify OpenWrt 25.12.4 SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_URL='https://downloads.openwrt.org/releases/25.12.4/targets/mediatek/filogic/openwrt-sdk-25.12.4-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64.tar.zst'
+          SDK_SHA256='411a2277ca10f909c30275a506aab4dc28a4f1281d7fda4f19faaa2ded6630bb'
+          curl --fail --location --retry 3 "$SDK_URL" --output "$RUNNER_TEMP/openwrt-sdk.tar.zst"
+          echo "$SDK_SHA256  $RUNNER_TEMP/openwrt-sdk.tar.zst" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/sdk"
+          tar --zstd -xf "$RUNNER_TEMP/openwrt-sdk.tar.zst" -C "$RUNNER_TEMP/sdk"
+          SDK_DIR="$(find "$RUNNER_TEMP/sdk" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+          test -n "$SDK_DIR"
+          echo "SDK_DIR=$SDK_DIR" >> "$GITHUB_ENV"
+
+      - name: Prepare LuCI feed and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SDK_DIR"
+          ./scripts/feeds update luci
+          mkdir -p package/luci-app-my-device-manager
+          cp -a "$SOURCE_DIR/luci-app-my-device-manager/." package/luci-app-my-device-manager/
+          make defconfig
+
+      - name: Compile APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SDK_DIR"
+          make package/luci-app-my-device-manager/compile V=s
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          mapfile -t PACKAGES < <(find bin/packages -type f -name 'luci-app-my-device-manager*.apk' -print)
+          if [ "${#PACKAGES[@]}" -ne 1 ]; then
+            printf 'Expected one package APK, found %s:\n' "${#PACKAGES[@]}"
+            printf '%s\n' "${PACKAGES[@]}"
+            exit 1
+          fi
+          cp "${PACKAGES[0]}" "$GITHUB_WORKSPACE/artifacts/luci-app-my-device-manager-0.2.0-r1.apk"
+          cd "$GITHUB_WORKSPACE/artifacts"
+          sha256sum luci-app-my-device-manager-0.2.0-r1.apk > luci-app-my-device-manager-0.2.0-r1.apk.sha256
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: luci-app-my-device-manager-apk
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release for version tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: My Device Manager ${{ github.ref_name }}
+          generate_release_notes: true
+          files: artifacts/*
+          body: |
+            Early scaffold for OpenWrt 25.12.x / MediaTek Filogic.
+            Includes client discovery, a MAC-keyed friendly-name registry, and
+            standard DHCP reservation management. Wi-Fi band enforcement and
+            per-device rate shaping are not implemented yet. Test on the target
+            firmware before use.
