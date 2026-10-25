@@ -72,14 +72,11 @@ install_tree() {
     done
 }
 
-do_install() {
-    require_root
+download_source() {
     command -v wget >/dev/null 2>&1 || die "Не найден wget."
     command -v base64 >/dev/null 2>&1 || die "Не найден base64."
     command -v tar >/dev/null 2>&1 || die "Не найден tar."
     command -v gzip >/dev/null 2>&1 || die "Не найден gzip."
-    command -v uci >/dev/null 2>&1 || die "Не похоже на OpenWrt: не найден uci."
-    [ -d /www/luci-static ] || die "Не найден LuCI в /www/luci-static. Установи LuCI перед этим скриптом."
 
     tmp_dir="$(mktemp -d /tmp/my-device-manager.XXXXXX)"
     trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
@@ -87,8 +84,8 @@ do_install() {
 
     log "Загружаю исходные файлы..."
     for part in 01 02 03 04 05 06 07 08 09; do
-        wget -q -O "$tmp_dir/bundle.part${part}" "${SOURCE_BASE}/source/bundle.part${part}" ||
-            die "Не удалось загрузить исходник bundle.part${part}. Проверь доступ к raw.githubusercontent.com."
+        wget -q -O "$tmp_dir/bundle.part\${part}" "\${SOURCE_BASE}/source/bundle.part\${part}" ||
+            die "Не удалось загрузить исходник bundle.part\${part}. Проверь доступ к raw.githubusercontent.com."
     done
 
     cat "$tmp_dir"/bundle.part* > "$tmp_dir/source.tar.gz.b64"
@@ -98,11 +95,33 @@ do_install() {
     tar -xzf "$tmp_dir/source.tar.gz" --strip-components=1 -C "$tmp_dir/source"
 
     package_dir="$tmp_dir/source/luci-app-my-device-manager"
+}
+
+validate_payload() {
     [ -d "$package_dir" ] || die "В архиве отсутствует каталог приложения."
     [ -f "$package_dir/root/usr/share/luci/menu.d/luci-app-my-device-manager.json" ] ||
         die "В архиве отсутствует запись меню LuCI."
     [ -f "$package_dir/root/usr/share/rpcd/acl.d/luci-app-my-device-manager.json" ] ||
         die "В архиве отсутствуют ACL rpcd."
+    [ -d "$package_dir/root" ] || die "В архиве отсутствуют системные файлы приложения."
+    if [ ! -d "$package_dir/htdocs" ] && [ ! -d "$package_dir/luasrc" ] && [ ! -d "$package_dir/ucode" ]; then
+        die "В архиве отсутствуют файлы интерфейса LuCI."
+    fi
+}
+
+do_check() {
+    download_source
+    validate_payload
+    log "Проверка успешна: архив и обязательные файлы LuCI корректны."
+}
+
+do_install() {
+    require_root
+    command -v uci >/dev/null 2>&1 || die "Не похоже на OpenWrt: не найден uci."
+    [ -d /www/luci-static ] || die "Не найден LuCI в /www/luci-static. Установи LuCI перед этим скриптом."
+
+    download_source
+    validate_payload
 
     mkdir -p "$STATE_DIR"
     touch "$STATE_DIR/original-files" "$STATE_DIR/new-files"
@@ -117,7 +136,6 @@ do_install() {
     log "Установка завершена. Обнови страницу LuCI или выйди и войди снова."
     log "Для удаления и восстановления прежних файлов выполни: sh $0 uninstall"
 }
-
 do_uninstall() {
     require_root
     [ -d "$STATE_DIR" ] || die "Резервные данные установки не найдены."
@@ -157,9 +175,10 @@ do_uninstall() {
 
 case "${1:-install}" in
     install) do_install ;;
+    check|verify) do_check ;;
     uninstall|remove) do_uninstall ;;
     -h|--help|help)
-        printf 'Usage: sh install.sh [install|uninstall]\n'
+        printf 'Usage: sh install.sh [install|uninstall|check]\n'
         ;;
     *) die "Неизвестная команда: $1 (используй install или uninstall)." ;;
 esac
