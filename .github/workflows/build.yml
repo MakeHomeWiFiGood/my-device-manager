@@ -33,6 +33,25 @@ jobs:
           test -f "$RUNNER_TEMP/mdm-source/luci-app-my-device-manager/root/usr/share/luci/menu.d/luci-app-my-device-manager.json"
           test -f "$RUNNER_TEMP/mdm-source/luci-app-my-device-manager/root/usr/share/rpcd/acl.d/luci-app-my-device-manager.json"
 
+      - name: Inspect LuCI app source for reported device names
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/mdm-source/luci-app-my-device-manager"
+          echo '=== PACKAGE TREE ==='
+          find "$APP" -type f -print | sort
+          echo '=== SOURCE FILE CONTENTS ==='
+          while IFS= read -r file; do
+            case "$file" in
+              *.lua|*.uc|*.ucode|*.js|*.json|*.htm|*.html|*.sh|*.css)
+                echo "===== $file ====="
+                sed -n '1,260p' "$file"
+                ;;
+            esac
+          done <<EOF
+$(find "$APP" -type f | sort)
+EOF
+
       - name: Validate installer and prepare download artifact
         shell: bash
         run: |
@@ -67,20 +86,3 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish local-only device label release
-        if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v0.2.3
-          target_commitish: ${{ github.sha }}
-          name: My Device Manager v0.2.3 — local-only device labels
-          overwrite_files: true
-          generate_release_notes: true
-          files: artifacts/*
-          body: |
-            Adds automatic display labels for unregistered devices without a useful
-            hostname. Labels use the detected connection type and MAC suffix and
-            exist only in the LuCI interface; they are not written to DHCP, UCI,
-            or the device hostname. A system-side name is only written following
-            an explicit user registration action. Installer remains compatible
-            with BusyBox tar. Router installation has not been live-tested.
