@@ -51,29 +51,24 @@ jobs:
           test -n "$SDK_DIR"
           echo "SDK_DIR=$SDK_DIR" >> "$GITHUB_ENV"
 
-      - name: Register local package with the SDK
+      - name: Register package in the LuCI feed tree
         shell: bash
         run: |
           set -euo pipefail
           cd "$SDK_DIR"
-          # LuCI's make helpers are part of the feed checkout, but the app itself
-          # is registered as a local SDK package to avoid stale feed indexes.
           ./scripts/feeds update luci
-          PACKAGE_DIR="package/luci-app-my-device-manager"
-          mkdir -p "$PACKAGE_DIR"
-          cp -a "$SOURCE_DIR/luci-app-my-device-manager/." "$PACKAGE_DIR/"
-          echo "=== Source package files ==="
-          find "$PACKAGE_DIR" -maxdepth 3 -type f -print | sort
-          echo "=== Source package Makefile ==="
-          sed -n '1,160p' "$PACKAGE_DIR/Makefile"
-          if ! grep -Eq '^include[[:space:]].*luci\.mk([[:space:]]*)$' "$PACKAGE_DIR/Makefile"; then
-            echo "::error::No LuCI make helper include was found in the package Makefile"
-            exit 1
-          fi
-          sed -i -E '/^include[[:space:]].*luci\.mk[[:space:]]*$/c\include $(TOPDIR)/feeds/luci/luci.mk' "$PACKAGE_DIR/Makefile"
-          echo "=== SDK-local Makefile after adapting LuCI include ==="
-          sed -n '1,160p' "$PACKAGE_DIR/Makefile"
+          FEED_PACKAGE_DIR="feeds/luci/applications/luci-app-my-device-manager"
+          mkdir -p "$FEED_PACKAGE_DIR"
+          cp -a "$SOURCE_DIR/luci-app-my-device-manager/." "$FEED_PACKAGE_DIR/"
+          # OpenWrt's feed index is generated before our package is copied.
+          # Create the same package/feeds symlink that feeds install normally adds.
+          mkdir -p package/feeds/luci
+          ln -sfn ../../../feeds/luci/applications/luci-app-my-device-manager package/feeds/luci/luci-app-my-device-manager
+          test -f package/feeds/luci/luci-app-my-device-manager/Makefile
           test -f feeds/luci/luci.mk
+          echo "=== Registered package target ==="
+          readlink -f package/feeds/luci/luci-app-my-device-manager
+          sed -n '1,100p' package/feeds/luci/luci-app-my-device-manager/Makefile
           make defconfig
 
       - name: Compile APK
@@ -81,7 +76,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "$SDK_DIR"
-          make package/luci-app-my-device-manager/compile V=s
+          make package/feeds/luci/luci-app-my-device-manager/compile V=s
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
           mapfile -t PACKAGES < <(find bin/packages -type f -name 'luci-app-my-device-manager*.apk' -print)
           if [ "${#PACKAGES[@]}" -ne 1 ]; then
