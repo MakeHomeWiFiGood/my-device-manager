@@ -1,22 +1,38 @@
 # My Device Manager
 
-An early LuCI application for OpenWrt 25.12.x. Current scope: device discovery, a persistent MAC-keyed friendly-name registry, and integration with standard OpenWrt DHCP static reservations.
+An early LuCI application for OpenWrt 25.12.x. It discovers LAN/Wi-Fi clients, keeps a persistent MAC-keyed registry, integrates with ordinary OpenWrt DHCP reservations, and shows available device fingerprints and Wi-Fi link statistics.
 
-For unregistered clients, the interface first uses a readable name announced by an mDNS service (for example, Google Cast's friendly name or an Android TV Remote service name), then an mDNS hostname, then the hostname from the current DHCP lease. If UFP is installed and running, the list can additionally show its detected device/model and vendor fingerprint. The vendor may identify a network module or MAC OUI rather than the consumer device brand; it is displayed as separate metadata, not treated as the announced device name. For associated Wi-Fi clients, the app also reads the current band/interface, frequency-derived channel, signal level, Wi-Fi standard, RX/TX link rates and per-association byte counters from hostapd when available. The RPC parser keeps these telemetry fields in distinct response properties. Static DHCP reservation names are not allowed to overwrite a hostname reported by the device. If no useful name is available, the interface displays “Неизвестное устройство” instead of inventing a label from the Wi-Fi band and MAC suffix. Discovered names and fingerprint metadata are read-only and are not written to DHCP, UCI, or the device hostname.
+## Device names and information
 
-## Install or update from a script
+For unregistered clients, the interface uses a readable name announced by an mDNS service (for example, Google Cast or Android TV Remote), then an mDNS hostname, then the hostname from the current DHCP lease. If UFP is already installed and running, the list can additionally show its detected model/device and vendor fingerprint. A MAC vendor may identify a network module rather than the consumer device brand, so it is displayed as separate metadata instead of being treated as the device name. Devices that have not been registered in My Device Manager are explicitly marked **“Устройство не зарегистрировано”**.
+
+For associated Wi-Fi clients, the app can display the radio/band, channel, signal level, Wi-Fi standard, RX/TX link rates and current association byte counters from hostapd. The counters may reset after a client reconnects.
+
+## Per-device Wi-Fi band selection
+
+Registered devices have a selector with three modes:
+
+- **2,4 + 5 ГГц — выбор клиента (без ограничений MDM):** MDM removes the deny-list entries it created for that device. The client chooses its band as usual. Existing manually configured Wi-Fi ACLs remain in force.
+- **Только 2,4 ГГц:** MDM adds that device's MAC address to deny-lists for active APs on other bands.
+- **Только 5 ГГц:** MDM adds the device's MAC address to deny-lists for active APs on other bands.
+
+Applying a restriction updates the relevant `wireless` UCI settings and can briefly reload Wi-Fi, interrupting clients. Before applying a restriction, MDM checks that each denied-band AP has an AP on the permitted band with the same SSID, encryption mode and key, so the client has a compatible network to rejoin. If that check fails, or if the existing Wi-Fi ACL uses an allow-list or a conflicting dormant MAC list, the operation is refused instead of silently overwriting the policy. MDM tracks the entries and filter settings it creates; switching back to both bands, unregistering a device, or uninstalling the app removes only MDM-owned restrictions where they are still identifiable.
+
+Register the device's current Wi-Fi MAC address. If a client uses MAC randomization and changes its address, it may need to be registered again. Band selection is a Wi-Fi admission restriction, not a guarantee that a client will prefer a particular band while both are enabled.
+
+## Install or update
 
 Run these commands in an SSH session as `root` on the router:
 
 ```sh
-wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.13/install.sh
+wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.14/install.sh
 sh /root/mdm-install.sh check
 sh /root/mdm-install.sh install
 ```
 
-The installer supports BusyBox `tar` on OpenWrt. It validates the source archive, safely patches the RPC backend and LuCI view to merge mDNS service names/hostnames by IPv4 address, parses `umdns browse` regardless of JSON indentation, explicitly sets executable permissions on the RPC handler so `rpcd` can register it, preserves DHCP-hostname precedence over static reservation labels, backs up replaced files, preserves an existing `/etc/config/my_device_manager`, and restarts `rpcd`. mDNS discovery is optional and uses `umdns` only when that service is installed and running; the installer does not install it or change its startup settings. The installer requires LuCI and access to `raw.githubusercontent.com`.
+The installer supports BusyBox `tar` on OpenWrt. It validates the source archive, patches the RPC backend and LuCI view for mDNS discovery, optional UFP fingerprints, Wi-Fi telemetry, band selection and the unregistered-device marker; explicitly sets executable permissions on the RPC handler; and backs up files it replaces. An existing `/etc/config/my_device_manager` is preserved. mDNS is optional and the installer does not install or enable it. UFP is also optional and is not installed by this app installer. Access to `raw.githubusercontent.com` is required.
 
-To remove the app and restore files that existed before installation, run:
+To remove the app and restore files that existed before installation:
 
 ```sh
 sh /root/mdm-install.sh uninstall
@@ -26,6 +42,6 @@ Keep `/root/mdm-install.sh` until you're sure you no longer need the uninstaller
 
 ## Current limitations
 
-A device's exact self-reported name is shown only when available from mDNS or DHCP. UFP may provide a model or MAC vendor, but it cannot guarantee the exact consumer device model, especially when the device uses a randomized MAC and does not expose other fingerprintable data. Wi-Fi rates and byte counters are the current hostapd station view and may reset when a client disconnects or reconnects. Wi-Fi band enforcement and per-device speed enforcement are not implemented yet. This project does not configure or bypass mwan3, Tachyon, proxy routing, or existing firewall rules. CI checks the installer and source bundle but does not perform a live installation on the router.
+The exact consumer model may not be detectable, especially when a device uses a randomized MAC address. Wi-Fi telemetry is a snapshot of the current hostapd station view rather than lifetime usage. Per-device speed enforcement is not implemented. My Device Manager does not change firewall rules, `tc`, mwan3, Tachyon, proxy routing, or other firewall policies. CI checks the installer and source bundle but does not perform a live installation on the target router.
 
 See `STATUS.md` for current implementation status.
