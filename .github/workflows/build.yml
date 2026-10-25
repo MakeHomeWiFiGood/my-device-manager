@@ -67,20 +67,3 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish fixed installer release
-        if: github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v0.2.2
-          target_commitish: ${{ github.sha }}
-          name: My Device Manager v0.2.2 — BusyBox-compatible installer
-          overwrite_files: true
-          generate_release_notes: true
-          files: artifacts/*
-          body: |
-            Fixes extraction on OpenWrt systems using BusyBox tar. No GNU-only
-            --strip-components option is used; the archive is validated and
-            extracted into a private temporary directory before locating the
-            app source tree. This installer was syntax-checked and tested against
-            the source bundle in CI, but has not been live-tested on a router.
-            It does not configure mwan3, Tachyon, proxy routing, or firewall policies.
