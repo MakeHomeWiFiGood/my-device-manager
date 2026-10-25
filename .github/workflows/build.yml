@@ -44,10 +44,10 @@ jobs:
           cp install.sh artifacts/install.sh
           sha256sum artifacts/install.sh > artifacts/install.sh.sha256
           cat > artifacts/INSTALL.txt <<'EOF'
-          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.7)
+          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.8)
           
           Run as root:
-            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.7/install.sh
+            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.8/install.sh
             sh /root/mdm-install.sh install
           
           To remove the installed app and restore files backed up by the installer:
@@ -67,13 +67,13 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish RPC permission and mDNS parser fixes
+      - name: Publish RPC, mDNS and optional UFP fingerprint integration
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.2.7
+          tag_name: v0.2.8
           target_commitish: ${{ github.sha }}
-          name: My Device Manager v0.2.7 — fix mDNS parsing and RPC permissions
+          name: My Device Manager v0.2.8 — expose optional UFP device fingerprints
           overwrite_files: true
           generate_release_notes: true
           files: artifacts/*
@@ -84,9 +84,13 @@ jobs:
             Also adds read-only mDNS discovery: Google Cast friendly names and
             Android TV Remote labels are matched by IPv4 address, followed by
             mDNS hostnames and DHCP hostnames. The service parser handles
-            different JSON indentation styles. Static DHCP labels cannot
-            overwrite a live device hostname. Unknown clients show
+            different JSON indentation styles. When UFP is already installed,
+            the RPC response now exposes its detected device/model, vendor and
+            device-name fields; LuCI displays model/vendor separately from the
+            real advertised name. UFP remains optional and is not installed or
+            configured by this installer. Static DHCP labels cannot overwrite
+            a live device hostname. Unknown clients show
             "Неизвестное устройство" instead of a generated Wi-Fi-band/MAC label.
             No device hostname, DHCP, UCI, firewall, mwan3, Tachyon, or proxy
-            routing settings are changed. mDNS is optional. CI checks pass;
+            routing settings are changed. mDNS and UFP are optional. CI checks pass;
             live router validation remains pending.
