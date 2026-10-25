@@ -704,6 +704,294 @@ MDM_UFP_UI
         die "RPC-обработчик остался без права на исполнение."
 }
 
+
+apply_wifi_client_stats_patch() {
+    local backend_file js_file wifi_helper wifi_patch ui_patch
+
+    backend_file="$package_dir/root/usr/libexec/rpcd/luci.my_device_manager"
+    js_file="$package_dir/htdocs/luci-static/resources/view/my-device-manager/main.js"
+    [ -f "$backend_file" ] || die "Не найден RPC-обработчик для статистики Wi-Fi."
+    [ -f "$js_file" ] || die "Не найден интерфейс для статистики Wi-Fi."
+
+    if ! grep -Fq 'json_add_string wifi_signal_dbm "$wifi_signal_dbm"' "$backend_file"; then
+        [ "$(grep -Fc 'list_devices() {' "$backend_file" || true)" = "1" ] ||
+            die "Не найдено место для помощника статистики Wi-Fi."
+        [ "$(grep -Fc '    append_ufp_records "$raw"' "$backend_file" || true)" = "1" ] ||
+            die "Не найден вызов UFP-помощника для подключения статистики Wi-Fi."
+        [ "$(grep -Fc '        $1 == "U" {' "$backend_file" || true)" = "1" ] ||
+            die "Не найден парсер записей UFP для добавления статистики Wi-Fi."
+        [ "$(grep -Fc 'ufp_device_name[tolower(m)]' "$backend_file" || true)" = "1" ] ||
+            die "Не найдено место формирования строки устройства для статистики Wi-Fi."
+        [ "$(grep -Fc 'dns_name dhcp_mode discovered_name fingerprint_vendor fingerprint_device fingerprint_device_name; do' "$backend_file" || true)" = "1" ] ||
+            die "Не найден список полей ответа RPC для расширения статистикой Wi-Fi."
+        [ "$(grep -Fc 'json_add_string fingerprint_device_name "$fingerprint_device_name"' "$backend_file" || true)" = "1" ] ||
+            die "Не найдены поля UFP перед добавлением статистики Wi-Fi."
+
+        wifi_helper="$tmp_dir/wifi-helper.sh"
+        wifi_patch="$tmp_dir/wifi-backend.awk"
+        cat > "$wifi_helper" <<'MDM_WIFI_HELPER'
+append_wifi_client_records() {
+    local output_file="$1" wifi_objects wifi_iface wifi_json wifi_freq wifi_client_keys wifi_client_key wifi_mac
+    local wifi_signal wifi_ht wifi_vht wifi_he wifi_standard wifi_rate_rx wifi_rate_tx wifi_bytes_rx wifi_bytes_tx
+    local wifi_rx_rate_mbps wifi_tx_rate_mbps
+
+    [ -n "$output_file" ] || return 0
+    command -v ubus >/dev/null 2>&1 || return 0
+    command -v json_load >/dev/null 2>&1 || return 0
+
+    # Read hostapd station stats only. This is optional and read-only: no
+    # wireless config, radio state, routing, or firewall settings are changed.
+    wifi_objects=$(ubus list 2>/dev/null | sed -n 's/^hostapd\.//p')
+    [ -n "$wifi_objects" ] || return 0
+
+    for wifi_iface in $wifi_objects; do
+        case "$wifi_iface" in
+            *[!A-Za-z0-9_.-]*) continue ;;
+        esac
+        wifi_json=$(ubus call "hostapd.$wifi_iface" get_clients '{}' 2>/dev/null) || continue
+        [ -n "$wifi_json" ] || continue
+        json_load "$wifi_json" 2>/dev/null || continue
+        wifi_freq=""
+        json_get_var wifi_freq freq
+        wifi_freq=$(printf '%s' "$wifi_freq" | tr -cd '0-9')
+        json_select clients 2>/dev/null || { json_cleanup; continue; }
+        wifi_client_keys=""
+        json_get_keys wifi_client_keys
+
+        for wifi_client_key in $wifi_client_keys; do
+            case "$wifi_client_key" in
+                [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F])
+                    wifi_mac="$wifi_client_key" ;;
+                [0-9a-fA-F][0-9a-fA-F]_[0-9a-fA-F][0-9a-fA-F]_[0-9a-fA-F][0-9a-fA-F]_[0-9a-fA-F][0-9a-fA-F]_[0-9a-fA-F][0-9a-fA-F]_[0-9a-fA-F][0-9a-fA-F])
+                    wifi_mac=$(printf '%s' "$wifi_client_key" | tr '_' ':') ;;
+                *) continue ;;
+            esac
+
+            json_select "$wifi_client_key" 2>/dev/null || continue
+            wifi_signal=""
+            wifi_ht=""
+            wifi_vht=""
+            wifi_he=""
+            wifi_rate_rx=""
+            wifi_rate_tx=""
+            wifi_bytes_rx=""
+            wifi_bytes_tx=""
+            json_get_var wifi_signal signal
+            json_get_var wifi_ht ht
+            json_get_var wifi_vht vht
+            json_get_var wifi_he he
+
+            if json_select rate 2>/dev/null; then
+                json_get_var wifi_rate_rx rx
+                json_get_var wifi_rate_tx tx
+                json_select ..
+            fi
+            if json_select bytes 2>/dev/null; then
+                json_get_var wifi_bytes_rx rx
+                json_get_var wifi_bytes_tx tx
+                json_select ..
+            fi
+            json_select ..
+
+            wifi_signal=$(printf '%s' "$wifi_signal" | tr -cd '0-9-')
+            wifi_rate_rx=$(printf '%s' "$wifi_rate_rx" | tr -cd '0-9')
+            wifi_rate_tx=$(printf '%s' "$wifi_rate_tx" | tr -cd '0-9')
+            wifi_bytes_rx=$(printf '%s' "$wifi_bytes_rx" | tr -cd '0-9')
+            wifi_bytes_tx=$(printf '%s' "$wifi_bytes_tx" | tr -cd '0-9')
+
+            wifi_standard=""
+            case "$wifi_he" in
+                1|true|TRUE) wifi_standard="ax" ;;
+                *)
+                    case "$wifi_vht" in
+                        1|true|TRUE) wifi_standard="ac" ;;
+                        *)
+                            case "$wifi_ht" in
+                                1|true|TRUE) wifi_standard="n" ;;
+                            esac
+                            ;;
+                    esac
+                    ;;
+            esac
+
+            # OpenWrt/driver versions expose rates in either bit/s or kbit/s.
+            # Normalize both representations to Mbit/s.
+            wifi_rx_rate_mbps=""
+            wifi_tx_rate_mbps=""
+            if [ -n "$wifi_rate_rx" ] && [ "$wifi_rate_rx" -gt 0 ] 2>/dev/null; then
+                wifi_rx_rate_mbps=$(awk -v r="$wifi_rate_rx" 'BEGIN { if (r >= 1000000) printf "%.1f", r / 1000000; else if (r >= 1000) printf "%.1f", r / 1000; else printf "%.1f", r }')
+            fi
+            if [ -n "$wifi_rate_tx" ] && [ "$wifi_rate_tx" -gt 0 ] 2>/dev/null; then
+                wifi_tx_rate_mbps=$(awk -v r="$wifi_rate_tx" 'BEGIN { if (r >= 1000000) printf "%.1f", r / 1000000; else if (r >= 1000) printf "%.1f", r / 1000; else printf "%.1f", r }')
+            fi
+
+            printf 'W|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+                "$wifi_mac" "$wifi_iface" "$wifi_freq" "$wifi_signal" "$wifi_standard" \
+                "$wifi_rx_rate_mbps" "$wifi_tx_rate_mbps" "$wifi_bytes_rx" "$wifi_bytes_tx" >> "$output_file"
+        done
+        json_cleanup
+    done
+}
+MDM_WIFI_HELPER
+
+        cat > "$wifi_patch" <<'MDM_WIFI_PATCH'
+{
+    if ($0 == "list_devices() {") {
+        while ((getline helper_line < helper_file) > 0)
+            print helper_line
+        close(helper_file)
+    }
+
+    if ($0 == "    local raw merged section mac name band down up iface lease_ip dns_name dhcp_mode host_section discovered_name fingerprint_vendor fingerprint_device fingerprint_device_name")
+        $0 = "    local raw merged section mac name band down up iface lease_ip dns_name dhcp_mode host_section discovered_name fingerprint_vendor fingerprint_device fingerprint_device_name wifi_iface wifi_frequency_mhz wifi_signal_dbm wifi_standard wifi_rx_rate_mbps wifi_tx_rate_mbps wifi_rx_bytes wifi_tx_bytes"
+
+    if ($0 == "    append_ufp_records \"$raw\"") {
+        print
+        print "    append_wifi_client_records \"$raw\""
+        next
+    }
+
+    if ($0 == "        $1 == \"U\" {") {
+        print "        $1 == \"W\" {"
+        print "            mac_key=tolower($2)"
+        print "            if (mac_key ~ /^[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]/) {"
+        print "                if ($3 != \"\") wifi_iface[mac_key]=$3"
+        print "                if ($4 ~ /^[0-9]+$/) wifi_frequency_mhz[mac_key]=$4"
+        print "                if ($5 ~ /^-?[0-9]+$/) wifi_signal_dbm[mac_key]=$5"
+        print "                if ($6 != \"\") wifi_standard[mac_key]=$6"
+        print "                if ($7 ~ /^[0-9]+([.][0-9]+)?$/) wifi_rx_rate_mbps[mac_key]=$7"
+        print "                if ($8 ~ /^[0-9]+([.][0-9]+)?$/) wifi_tx_rate_mbps[mac_key]=$8"
+        print "                if ($9 ~ /^[0-9]+$/) wifi_rx_bytes[mac_key]=$9"
+        print "                if ($10 ~ /^[0-9]+$/) wifi_tx_bytes[mac_key]=$10"
+        print "            }"
+        print "        }"
+        print
+        next
+    }
+
+    if (index($0, "ufp_device_name[tolower(m)]") > 0 && index($0, "printf") > 0) {
+        print "                printf \"%s|%s|%s|%s|%d|%d|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\n\", m, ip[m], host[m], iface[m], online[m]+0, registered[m]+0, name[m], band[m], down[m], up[m], dns[m], mode[m], preferred, ufp_vendor[tolower(m)], ufp_device[tolower(m)], ufp_device_name[tolower(m)], wifi_iface[tolower(m)], wifi_frequency_mhz[tolower(m)], wifi_signal_dbm[tolower(m)], wifi_standard[tolower(m)], wifi_rx_rate_mbps[tolower(m)], wifi_tx_rate_mbps[tolower(m)], wifi_rx_bytes[tolower(m)], wifi_tx_bytes[tolower(m)];"
+        next
+    }
+
+    if ($0 == "dns_name dhcp_mode discovered_name fingerprint_vendor fingerprint_device fingerprint_device_name; do")
+        $0 = "dns_name dhcp_mode discovered_name fingerprint_vendor fingerprint_device fingerprint_device_name wifi_iface wifi_frequency_mhz wifi_signal_dbm wifi_standard wifi_rx_rate_mbps wifi_tx_rate_mbps wifi_rx_bytes wifi_tx_bytes; do"
+
+    if ($0 == "        json_add_string fingerprint_device_name \"$fingerprint_device_name\"") {
+        print
+        print "        json_add_string wifi_iface \"$wifi_iface\""
+        print "        json_add_string wifi_frequency_mhz \"$wifi_frequency_mhz\""
+        print "        json_add_string wifi_signal_dbm \"$wifi_signal_dbm\""
+        print "        json_add_string wifi_standard \"$wifi_standard\""
+        print "        json_add_string wifi_rx_rate_mbps \"$wifi_rx_rate_mbps\""
+        print "        json_add_string wifi_tx_rate_mbps \"$wifi_tx_rate_mbps\""
+        print "        json_add_string wifi_rx_bytes \"$wifi_rx_bytes\""
+        print "        json_add_string wifi_tx_bytes \"$wifi_tx_bytes\""
+        next
+    }
+
+    print
+}
+MDM_WIFI_PATCH
+
+        awk -v helper_file="$wifi_helper" -f "$wifi_patch" "$backend_file" > "$tmp_dir/backend.wifi" ||
+            die "Не удалось добавить сбор статистики Wi-Fi в RPC-обработчик."
+        grep -Fq 'append_wifi_client_records "$raw"' "$tmp_dir/backend.wifi" ||
+            die "Не удалось подключить сбор статистики Wi-Fi."
+        grep -Fq 'wifi_signal_dbm[mac_key]=$5' "$tmp_dir/backend.wifi" ||
+            die "Не удалось добавить разбор уровня сигнала Wi-Fi."
+        grep -Fq 'json_add_string wifi_signal_dbm "$wifi_signal_dbm"' "$tmp_dir/backend.wifi" ||
+            die "Не удалось добавить уровень сигнала в ответ RPC."
+        grep -Fq 'wifi_tx_bytes[tolower(m)]' "$tmp_dir/backend.wifi" ||
+            die "Не удалось сопоставить статистику Wi-Fi по MAC."
+        [ "$(grep -Fc 'wifi_signal_dbm wifi_standard' "$tmp_dir/backend.wifi" || true)" = "1" ] ||
+            die "Статистика Wi-Fi не добавлена в структуру ответа."
+        sh -n "$tmp_dir/backend.wifi" ||
+            die "RPC-обработчик со статистикой Wi-Fi не прошёл проверку shell-синтаксиса."
+        mv "$tmp_dir/backend.wifi" "$backend_file" ||
+            die "Не удалось сохранить RPC-обработчик со статистикой Wi-Fi."
+    fi
+
+    if ! grep -Fq 'function wifiDetailsText(d)' "$js_file"; then
+        [ "$(grep -Fc 'function rpcErrorMessage(err) {' "$js_file" || true)" = "1" ] ||
+            die "Не найдено место для отображения статистики Wi-Fi."
+        [ "$(grep -Fc 'd.fingerprint_device || d.fingerprint_vendor' "$js_file" || true)" = "1" ] ||
+            die "Не найден блок сведений UFP для вставки статистики Wi-Fi."
+        [ "$(grep -Fc 'd.wifi_tx_bytes' "$backend_file" || true)" = "1" ] ||
+            die "Поля Wi-Fi-статистики не обнаружены в RPC-обработчике."
+
+        ui_patch="$tmp_dir/wifi-ui.awk"
+        cat > "$ui_patch" <<'MDM_WIFI_UI'
+{
+    if ($0 == "function rpcErrorMessage(err) {") {
+        print "function formatTrafficBytes(value) {"
+        print "        var n = Number(value);"
+        print "        if (!isFinite(n) || n <= 0) return '0 Б';"
+        print "        var units = ['Б', 'КиБ', 'МиБ', 'ГиБ', 'ТиБ'];"
+        print "        var i = 0;"
+        print "        while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }"
+        print "        return n.toFixed(i === 0 || n >= 100 ? 0 : (n >= 10 ? 1 : 2)) + ' ' + units[i];"
+        print "}"
+        print ""
+        print "function wifiDetailsText(d) {"
+        print "        if (!d.wifi_iface) return '';"
+        print "        var parts = [];"
+        print "        if (d.wifi_standard) parts.push('802.11' + d.wifi_standard);"
+        print "        var freq = Number(d.wifi_frequency_mhz);"
+        print "        if (freq === 2484) parts.push('канал 14');"
+        print "        else if (freq >= 5955) parts.push('канал ' + Math.round((freq - 5950) / 5));"
+        print "        else if (freq >= 5000) parts.push('канал ' + Math.round((freq - 5000) / 5));"
+        print "        else if (freq >= 2412 && freq <= 2472) parts.push('канал ' + Math.round((freq - 2407) / 5));"
+        print "        if (d.wifi_signal_dbm !== undefined && d.wifi_signal_dbm !== null && d.wifi_signal_dbm !== '') parts.push('сигнал ' + d.wifi_signal_dbm + ' dBm');"
+        print "        var rxRate = Number(d.wifi_rx_rate_mbps);"
+        print "        var txRate = Number(d.wifi_tx_rate_mbps);"
+        print "        if (isFinite(rxRate) && rxRate > 0) parts.push('RX ' + rxRate.toFixed(1) + ' Мбит/с');"
+        print "        if (isFinite(txRate) && txRate > 0) parts.push('TX ' + txRate.toFixed(1) + ' Мбит/с');"
+        print "        var rxBytes = Number(d.wifi_rx_bytes);"
+        print "        var txBytes = Number(d.wifi_tx_bytes);"
+        print "        if ((isFinite(rxBytes) && rxBytes > 0) || (isFinite(txBytes) && txBytes > 0)) parts.push('трафик RX ' + formatTrafficBytes(rxBytes) + ' / TX ' + formatTrafficBytes(txBytes));"
+        print "        return parts.join(' · ');"
+        print "}"
+        print ""
+    }
+
+    if (index($0, "E('td', {}, [E('strong', {}, name), isUnidentifiedDevice(d)") > 0 &&
+        index($0, "d.fingerprint_device || d.fingerprint_vendor") > 0 &&
+        index($0, "d.registered && d.dhcp_mode") > 0 &&
+        index($0, "wifiDetailsText(d)") == 0) {
+        marker = ", d.registered && d.dhcp_mode ?"
+        at = index($0, marker)
+        if (at > 0) {
+            prefix = substr($0, 1, at - 1)
+            suffix = substr($0, at)
+            meta = ", wifiDetailsText(d) ? E('div', { 'class': 'mdm-muted' }, wifiDetailsText(d)) : ''"
+            $0 = prefix meta suffix
+        }
+    }
+    print
+}
+MDM_WIFI_UI
+
+        awk -f "$ui_patch" "$js_file" > "$tmp_dir/main.wifi.js" ||
+            die "Не удалось обновить интерфейс со статистикой Wi-Fi."
+        grep -Fq 'function wifiDetailsText(d)' "$tmp_dir/main.wifi.js" ||
+            die "Не удалось добавить отображение статистики Wi-Fi."
+        grep -Fq 'RX ' "$tmp_dir/main.wifi.js" ||
+            die "Не найдено отображение скорости Wi-Fi."
+        grep -Fq 'трафик RX ' "$tmp_dir/main.wifi.js" ||
+            die "Не найдено отображение счётчиков трафика."
+        grep -Fq "wifiDetailsText(d) ? E('div'" "$tmp_dir/main.wifi.js" ||
+            die "Не удалось подключить статистику к строке устройства."
+        mv "$tmp_dir/main.wifi.js" "$js_file" ||
+            die "Не удалось сохранить интерфейс со статистикой Wi-Fi."
+    fi
+
+    chmod 0755 "$backend_file" ||
+        die "Не удалось выставить исполняемые права RPC-обработчика."
+    [ -x "$backend_file" ] ||
+        die "RPC-обработчик остался без права на исполнение."
+}
+
 validate_payload() {
     [ -d "$package_dir" ] || die "В архиве отсутствует каталог приложения."
     [ -f "$package_dir/root/usr/share/luci/menu.d/luci-app-my-device-manager.json" ] ||
@@ -723,8 +1011,9 @@ do_check() {
     apply_device_hostname_precedence_fix
     apply_mdns_discovery_patch
     apply_ufp_fingerprint_patch
+    apply_wifi_client_stats_patch
     validate_payload
-    log "Проверка успешна: архив, DHCP/mDNS, необязательная интеграция UFP и файлы LuCI корректны."
+    log "Проверка успешна: архив, DHCP/mDNS, UFP, статистика Wi-Fi и файлы LuCI корректны."
 }
 
 do_install() {
@@ -736,6 +1025,7 @@ do_install() {
     apply_device_hostname_precedence_fix
     apply_mdns_discovery_patch
     apply_ufp_fingerprint_patch
+    apply_wifi_client_stats_patch
     validate_payload
 
     mkdir -p "$STATE_DIR"
