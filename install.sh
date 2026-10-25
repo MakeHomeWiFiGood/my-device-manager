@@ -488,6 +488,208 @@ MDM_MDNS_UI
         die "RPC-обработчик остался без права на исполнение."
 }
 
+
+apply_ufp_fingerprint_patch() {
+    local backend_file js_file ufp_helper backend_patch ui_patch
+
+    backend_file="$package_dir/root/usr/libexec/rpcd/luci.my_device_manager"
+    js_file="$package_dir/htdocs/luci-static/resources/view/my-device-manager/main.js"
+    [ -f "$backend_file" ] || die "Не найден RPC-обработчик для интеграции UFP."
+    [ -f "$js_file" ] || die "Не найден интерфейс для интеграции UFP."
+
+    if ! grep -Fq 'json_add_string fingerprint_device "$fingerprint_device"' "$backend_file"; then
+        [ "$(grep -Fc 'list_devices() {' "$backend_file" || true)" = "1" ] ||
+            die "Не найдено место для UFP-помощника."
+        [ "$(grep -Fc '    append_mdns_records "$raw"' "$backend_file" || true)" = "1" ] ||
+            die "Не найден вызов mDNS-помощника для подключения UFP."
+        [ "$(grep -Fc '        $1 == "H" {' "$backend_file" || true)" = "1" ] ||
+            die "Не найден парсер записей обнаружения для UFP."
+        [ "$(grep -Fc 'preferred;' "$backend_file" || true)" = "1" ] ||
+            die "Не найдено место формирования ответа со сведениями UFP."
+        [ "$(grep -Fc 'dns_name dhcp_mode discovered_name; do' "$backend_file" || true)" = "1" ] ||
+            die "Не найден разбор строки RPC-ответа для UFP."
+        [ "$(grep -Fc 'json_add_string discovered_name "$discovered_name"' "$backend_file" || true)" = "1" ] ||
+            die "Не найдено поле discovered_name для расширения ответа."
+
+        ufp_helper="$tmp_dir/ufp-helper.sh"
+        backend_patch="$tmp_dir/ufp-backend.awk"
+        cat > "$ufp_helper" <<'MDM_UFP_HELPER'
+append_ufp_records() {
+    local output_file="$1" fingerprint_json fingerprint_keys fingerprint_mac fingerprint_vendor fingerprint_device fingerprint_device_name
+
+    [ -n "$output_file" ] || return 0
+    command -v ubus >/dev/null 2>&1 || return 0
+    ubus -v list fingerprint >/dev/null 2>&1 || return 0
+
+    # UFP is optional. Read its current classification without changing
+    # daemon settings or writing anything back to DHCP/UCI.
+    fingerprint_json=$(ubus call fingerprint fingerprint '{}' 2>/dev/null) || return 0
+    [ -n "$fingerprint_json" ] || return 0
+    json_load "$fingerprint_json" 2>/dev/null || return 0
+    json_get_keys fingerprint_keys
+
+    for fingerprint_mac in $fingerprint_keys; do
+        case "$fingerprint_mac" in
+            [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]) ;;
+            *) continue ;;
+        esac
+
+        fingerprint_vendor=""
+        fingerprint_device=""
+        fingerprint_device_name=""
+        json_select "$fingerprint_mac" 2>/dev/null || continue
+        json_get_var fingerprint_vendor vendor
+        json_get_var fingerprint_device device
+        json_get_var fingerprint_device_name device_name
+        json_select ..
+
+        # These fields are pipe-delimited in the internal temporary file.
+        fingerprint_vendor=$(printf '%s' "$fingerprint_vendor" | tr -d '\r\n|')
+        fingerprint_device=$(printf '%s' "$fingerprint_device" | tr -d '\r\n|')
+        fingerprint_device_name=$(printf '%s' "$fingerprint_device_name" | tr -d '\r\n|')
+        if [ -n "$fingerprint_vendor" ] || [ -n "$fingerprint_device" ] || [ -n "$fingerprint_device_name" ]; then
+            printf 'U|%s|%s|%s|%s\n' "$fingerprint_mac" "$fingerprint_vendor" "$fingerprint_device" "$fingerprint_device_name" >> "$output_file"
+        fi
+    done
+    json_cleanup
+}
+MDM_UFP_HELPER
+
+        cat > "$backend_patch" <<'MDM_UFP_PATCH'
+{
+    if ($0 == "list_devices() {") {
+        while ((getline helper_line < helper_file) > 0)
+            print helper_line
+        close(helper_file)
+    }
+
+    if ($0 == "    local raw merged section mac name band down up iface lease_ip dns_name dhcp_mode host_section discovered_name")
+        $0 = "    local raw merged section mac name band down up iface lease_ip dns_name dhcp_mode host_section discovered_name fingerprint_vendor fingerprint_device fingerprint_device_name"
+
+    if ($0 == "    append_mdns_records \"$raw\"") {
+        print
+        print "    append_ufp_records \"$raw\""
+        next
+    }
+
+    if ($0 == "        $1 == \"H\" {") {
+        print "        $1 == \"U\" {"
+        print "            mac_key=tolower($2)"
+        print "            if (mac_key ~ /^[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]/) {"
+        print "                if ($3 != \"\") ufp_vendor[mac_key]=$3"
+        print "                if ($4 != \"\") ufp_device[mac_key]=$4"
+        print "                if ($5 != \"\") ufp_device_name[mac_key]=$5"
+        print "            }"
+        print "        }"
+        print
+        next
+    }
+
+    if (index($0, "preferred;") > 0 && index($0, "printf") > 0) {
+        $0 = "                printf \"%s|%s|%s|%s|%d|%d|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\\\n\", m, ip[m], host[m], iface[m], online[m]+0, registered[m]+0, name[m], band[m], down[m], up[m], dns[m], mode[m], preferred, ufp_vendor[tolower(m)], ufp_device[tolower(m)], ufp_device_name[tolower(m)];"
+    }
+
+    if (index($0, "dns_name dhcp_mode discovered_name; do") > 0)
+        sub(/dns_name dhcp_mode discovered_name; do/, "dns_name dhcp_mode discovered_name fingerprint_vendor fingerprint_device fingerprint_device_name; do")
+
+    if (index($0, "json_add_string discovered_name \"$discovered_name\"") > 0) {
+        print
+        print "        json_add_string fingerprint_vendor \"$fingerprint_vendor\""
+        print "        json_add_string fingerprint_device \"$fingerprint_device\""
+        print "        json_add_string fingerprint_device_name \"$fingerprint_device_name\""
+        next
+    }
+
+    print
+}
+MDM_UFP_PATCH
+
+        awk -v helper_file="$ufp_helper" -f "$backend_patch" "$backend_file" > "$tmp_dir/backend.ufp" ||
+            die "Не удалось добавить чтение отпечатков UFP в RPC-обработчик."
+        grep -Fq 'append_ufp_records "$raw"' "$tmp_dir/backend.ufp" ||
+            die "Не удалось подключить UFP к списку устройств."
+        grep -Fq 'ufp_device[tolower(m)]' "$tmp_dir/backend.ufp" ||
+            die "Не удалось сопоставить отпечаток UFP по MAC."
+        grep -Fq 'json_add_string fingerprint_device "$fingerprint_device"' "$tmp_dir/backend.ufp" ||
+            die "Не удалось добавить модель UFP в RPC-ответ."
+        sh -n "$tmp_dir/backend.ufp" ||
+            die "RPC-обработчик с UFP не прошёл проверку shell-синтаксиса."
+        mv "$tmp_dir/backend.ufp" "$backend_file" ||
+            die "Не удалось сохранить RPC-обработчик с UFP."
+    fi
+
+    if ! grep -Fq 'd.fingerprint_device' "$js_file"; then
+        [ "$(grep -Fc 'return (d.discovered_name || "").trim() || usefulHostname(d) ||' "$js_file" || true)" = "1" ] ||
+            die "Не найден выбор отображаемого имени для расширения UFP."
+        [ "$(grep -Fc 'var searchable = [name, d.discovered_name, d.hostname, d.mac, d.ip].join' "$js_file" || true)" = "1" ] ||
+            die "Не найден поиск устройств для расширения UFP."
+        [ "$(grep -Fc 'E(''td'', {}, [E(''strong'', {}, name)' "$js_file" || true)" -ge "0" ] 2>/dev/null || true
+
+        ui_patch="$tmp_dir/ufp-ui.awk"
+        cat > "$ui_patch" <<'MDM_UFP_UI'
+{
+    if (index($0, "return !(d.name && d.name.trim()) && !((d.discovered_name || \"\").trim()) && !usefulHostname(d);")) {
+        prefix=$0
+        sub(/return.*/, "", prefix)
+        $0=prefix "return !(d.name && d.name.trim()) && !((d.discovered_name || d.fingerprint_device_name || \"\").trim()) && !usefulHostname(d);"
+    }
+
+    if (index($0, "return (d.discovered_name || \"\").trim() || usefulHostname(d) ||")) {
+        prefix=$0
+        sub(/return.*/, "", prefix)
+        $0=prefix "return (d.discovered_name || d.fingerprint_device_name || \"\").trim() || usefulHostname(d) || 'Неизвестное устройство';"
+    }
+
+    if (index($0, "var suggested = (d.discovered_name || \"\").trim() || usefulHostname(d);")) {
+        prefix=$0
+        sub(/var suggested.*/, "", prefix)
+        $0=prefix "var suggested = (d.discovered_name || d.fingerprint_device_name || \"\").trim() || usefulHostname(d);"
+    }
+
+    if (index($0, "var searchable = [name, d.discovered_name, d.hostname, d.mac, d.ip].join")) {
+        prefix=$0
+        sub(/var searchable.*/, "", prefix)
+        $0=prefix "var searchable = [name, d.discovered_name, d.fingerprint_device_name, d.fingerprint_device, d.fingerprint_vendor, d.hostname, d.mac, d.ip].join(' ').toLocaleLowerCase();"
+    }
+
+    if (index($0, "E('td', {}, [E('strong', {}, name), isUnidentifiedDevice(d)") > 0 &&
+        index($0, "d.registered && d.dhcp_mode") > 0 &&
+        index($0, "d.fingerprint_device") == 0) {
+        marker = ", d.registered && d.dhcp_mode ?"
+        at = index($0, marker)
+        if (at > 0) {
+            prefix = substr($0, 1, at - 1)
+            suffix = substr($0, at)
+            meta = ", (d.fingerprint_device || d.fingerprint_vendor) ? E('div', { 'class': 'mdm-muted' }, (d.fingerprint_device ? 'Модель: ' + d.fingerprint_device : '') + (d.fingerprint_vendor ? (d.fingerprint_device ? ' · ' : '') + 'Производитель по MAC: ' + d.fingerprint_vendor : '')) : ''"
+            $0 = prefix meta suffix
+        }
+    }
+
+    if (index($0, "Сначала используются читаемые имена mDNS-служб")) {
+        sub(/Обнаруженные имена не записываются автоматически в системную конфигурацию\./,
+            "Отпечатки UFP (если служба установлена) дополнительно показывают модель и производителя по сетевым признакам; производитель MAC может относиться к сетевому модулю, а не к бренду устройства. Автоматически в системную конфигурацию ничего не записывается.")
+    }
+
+    print
+}
+MDM_UFP_UI
+
+        awk -f "$ui_patch" "$js_file" > "$tmp_dir/main.ufp.js" ||
+            die "Не удалось обновить интерфейс для сведений UFP."
+        grep -Fq 'd.fingerprint_device' "$tmp_dir/main.ufp.js" ||
+            die "Проверка отображения модели UFP не пройдена."
+        grep -Fq 'Производитель по MAC:' "$tmp_dir/main.ufp.js" ||
+            die "Проверка отображения производителя UFP не пройдена."
+        mv "$tmp_dir/main.ufp.js" "$js_file" ||
+            die "Не удалось сохранить интерфейс со сведениями UFP."
+    fi
+
+    chmod 0755 "$backend_file" ||
+        die "Не удалось выставить исполняемые права RPC-обработчика."
+    [ -x "$backend_file" ] ||
+        die "RPC-обработчик остался без права на исполнение."
+}
+
 validate_payload() {
     [ -d "$package_dir" ] || die "В архиве отсутствует каталог приложения."
     [ -f "$package_dir/root/usr/share/luci/menu.d/luci-app-my-device-manager.json" ] ||
@@ -506,8 +708,9 @@ do_check() {
     download_source
     apply_device_hostname_precedence_fix
     apply_mdns_discovery_patch
+    apply_ufp_fingerprint_patch
     validate_payload
-    log "Проверка успешна: архив, DHCP/mDNS-обнаружение и файлы LuCI корректны."
+    log "Проверка успешна: архив, DHCP/mDNS, необязательная интеграция UFP и файлы LuCI корректны."
 }
 
 do_install() {
@@ -518,6 +721,7 @@ do_install() {
     download_source
     apply_device_hostname_precedence_fix
     apply_mdns_discovery_patch
+    apply_ufp_fingerprint_patch
     validate_payload
 
     mkdir -p "$STATE_DIR"
