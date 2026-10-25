@@ -2,14 +2,14 @@
 
 An early LuCI application for OpenWrt 25.12.x. Current scope: device discovery, a persistent MAC-keyed friendly-name registry, and integration with standard OpenWrt DHCP static reservations.
 
-For unregistered clients, the interface first uses a readable name announced by an mDNS service (for example, Google Cast's friendly name or an Android TV Remote service name), then an mDNS hostname, then the hostname from the current DHCP lease. Static DHCP reservation names are not allowed to overwrite a hostname reported by the device. If no useful name is available, the interface displays “Неизвестное устройство” instead of inventing a label from the Wi-Fi band and MAC suffix. Discovered names are read-only and are not written to DHCP, UCI, or the device hostname.
+For unregistered clients, the interface first uses a readable name announced by an mDNS service (for example, Google Cast's friendly name or an Android TV Remote service name), then an mDNS hostname, then the hostname from the current DHCP lease. If UFP is installed and running, the list can additionally show its detected device/model and vendor fingerprint. The vendor may identify a network module or MAC OUI rather than the consumer device brand; it is displayed as separate metadata, not treated as the announced device name. Static DHCP reservation names are not allowed to overwrite a hostname reported by the device. If no useful name is available, the interface displays “Неизвестное устройство” instead of inventing a label from the Wi-Fi band and MAC suffix. Discovered names and fingerprint metadata are read-only and are not written to DHCP, UCI, or the device hostname.
 
 ## Install or update from a script
 
 Run these commands in an SSH session as `root` on the router:
 
 ```sh
-wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.7/install.sh
+wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.8/install.sh
 sh /root/mdm-install.sh check
 sh /root/mdm-install.sh install
 ```
@@ -26,6 +26,6 @@ Keep `/root/mdm-install.sh` until you're sure you no longer need the uninstaller
 
 ## Current limitations
 
-A device name is shown only when it is available from mDNS or DHCP; routers cannot infer an exact self-reported name from a MAC address alone. Wi-Fi band enforcement and per-device speed enforcement are not implemented yet. This project does not configure or bypass mwan3, Tachyon, proxy routing, or existing firewall rules. CI checks the installer and source bundle but does not perform a live installation on the router.
+A device's exact self-reported name is shown only when available from mDNS or DHCP. UFP may provide a model or MAC vendor, but it cannot guarantee the exact consumer device model, especially when the device uses a randomized MAC and does not expose other fingerprintable data. Wi-Fi band enforcement and per-device speed enforcement are not implemented yet. This project does not configure or bypass mwan3, Tachyon, proxy routing, or existing firewall rules. CI checks the installer and source bundle but does not perform a live installation on the router.
 
 See `STATUS.md` for current implementation status.
