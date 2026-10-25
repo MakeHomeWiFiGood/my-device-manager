@@ -2,14 +2,14 @@
 
 An early LuCI application for OpenWrt 25.12.x. Current scope: device discovery, a persistent MAC-keyed friendly-name registry, and integration with standard OpenWrt DHCP static reservations.
 
-For unregistered clients, the interface first uses a readable name announced by an mDNS service (for example, Google Cast's friendly name or an Android TV Remote service name), then an mDNS hostname, then the hostname from the current DHCP lease. If UFP is installed and running, the list can additionally show its detected device/model and vendor fingerprint. The vendor may identify a network module or MAC OUI rather than the consumer device brand; it is displayed as separate metadata, not treated as the announced device name. For associated Wi-Fi clients, the app also reads the current band/interface, frequency-derived channel, signal level, Wi-Fi standard, RX/TX link rates and per-association byte counters from hostapd when available. Static DHCP reservation names are not allowed to overwrite a hostname reported by the device. If no useful name is available, the interface displays “Неизвестное устройство” instead of inventing a label from the Wi-Fi band and MAC suffix. Discovered names and fingerprint metadata are read-only and are not written to DHCP, UCI, or the device hostname.
+For unregistered clients, the interface first uses a readable name announced by an mDNS service (for example, Google Cast's friendly name or an Android TV Remote service name), then an mDNS hostname, then the hostname from the current DHCP lease. If UFP is installed and running, the list can additionally show its detected device/model and vendor fingerprint. The vendor may identify a network module or MAC OUI rather than the consumer device brand; it is displayed as separate metadata, not treated as the announced device name. For associated Wi-Fi clients, the app also reads the current band/interface, frequency-derived channel, signal level, Wi-Fi standard, RX/TX link rates and per-association byte counters from hostapd when available. The RPC parser keeps these telemetry fields in distinct response properties. Static DHCP reservation names are not allowed to overwrite a hostname reported by the device. If no useful name is available, the interface displays “Неизвестное устройство” instead of inventing a label from the Wi-Fi band and MAC suffix. Discovered names and fingerprint metadata are read-only and are not written to DHCP, UCI, or the device hostname.
 
 ## Install or update from a script
 
 Run these commands in an SSH session as `root` on the router:
 
 ```sh
-wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.12/install.sh
+wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.13/install.sh
 sh /root/mdm-install.sh check
 sh /root/mdm-install.sh install
 ```
