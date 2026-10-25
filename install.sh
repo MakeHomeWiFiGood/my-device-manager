@@ -1587,10 +1587,10 @@ apply_two_level_registration_patch() {
         local_patch="$tmp_dir/registration-local.awk"
         cat > "$local_patch" <<'MDM_LOCAL_REGISTER'
 {
-    if ($0 == "            register)") in_register = 1
+    if ($0 == "            register|rename)") in_register = 1
     print
-    if (in_register && index($0, "ip=$(read_arg ip)") > 0 && !added) {
-        print "                ip=\"\" # MDM_TWO_LEVEL_LOCAL_REGISTER"
+    if (in_register && index($0, "requested_ip=$(read_arg ip)") > 0 && !added) {
+        print "                if [ \"$method\" = \"register\" ]; then requested_ip=\"\"; fi # MDM_TWO_LEVEL_LOCAL_REGISTER"
         added = 1
     }
     if (in_register && $0 == "                ;;") in_register = 0
