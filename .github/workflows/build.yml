@@ -51,7 +51,7 @@ jobs:
             sh /tmp/mdm-install.sh install
           
           To remove the installed app and restore files backed up by the installer:
-            sh /tmp/mdm-install.sh uninstall
+            sh /root/mdm-install.sh uninstall
           
           Requires LuCI and access to raw.githubusercontent.com.
           This is an early scaffold. Wi-Fi band enforcement and per-device speed
