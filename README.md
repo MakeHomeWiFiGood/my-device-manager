@@ -11,7 +11,7 @@ wget -O /tmp/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manage
 sh /tmp/mdm-install.sh install
 ```
 
-To check download access and the source archive without installing anything, run \`sh /tmp/mdm-install.sh check\`. The installer downloads the source bundle over HTTPS, checks the archive structure, backs up files it replaces, preserves an existing `/etc/config/my_device_manager`, and restarts `rpcd`. It requires LuCI and access to `raw.githubusercontent.com`.
+To check download access and the source archive without installing anything, run `sh /tmp/mdm-install.sh check`. The installer downloads the source bundle over HTTPS, checks the archive structure, backs up files it replaces, preserves an existing `/etc/config/my_device_manager`, and restarts `rpcd`. It requires LuCI and access to `raw.githubusercontent.com`.
 
 To remove the app and restore files that existed before installation, run:
 
