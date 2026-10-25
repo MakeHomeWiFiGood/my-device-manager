@@ -140,6 +140,305 @@ apply_device_hostname_precedence_fix() {
     sh -n "$backend_file" || die "RPCD-обработчик не прошёл проверку shell-синтаксиса."
 }
 
+
+apply_mdns_discovery_patch() {
+    local backend_file js_file mdns_helper mdns_patch ui_patch insert_helper
+
+    backend_file="$package_dir/root/usr/libexec/rpcd/luci.my_device_manager"
+    js_file="$package_dir/htdocs/luci-static/resources/view/my-device-manager/main.js"
+    [ -f "$backend_file" ] || die "Не найден RPC-обработчик для mDNS-обнаружения."
+    [ -f "$js_file" ] || die "Не найден интерфейс My Device Manager."
+
+    # mDNS support is optional; DHCP discovery continues to work unchanged
+    # if umdns is missing or not running.
+    if ! grep -Fq 'json_add_string discovered_name "$discovered_name"' "$backend_file"; then
+        [ "$(grep -Fc '    # Standard OpenWrt static DHCP reservations: expose reserved IPs even while' "$backend_file" || true)" = "1" ] ||
+            die "Не найден безопасный участок для добавления mDNS-имён."
+        [ "$(grep -Fc '            if ($3 != "") ip[m]=$3;' "$backend_file" || true)" = "1" ] ||
+            die "Не удалось определить обработку IP-адресов устройств."
+        [ "$(grep -Fc '        $1 == "R" {' "$backend_file" || true)" = "1" ] ||
+            die "Не найден участок объединения списка устройств."
+        [ "$(grep -Fc 'mode[m];' "$backend_file" || true)" = "1" ] ||
+            die "Не найден формат списка устройств для расширения."
+        [ "$(grep -Fc 'dns_name dhcp_mode; do' "$backend_file" || true)" = "1" ] ||
+            die "Не найден разбор списка устройств."
+        [ "$(grep -Fc 'json_add_string hostname "$host"' "$backend_file" || true)" = "1" ] ||
+            die "Не найдено поле hostname в RPC-ответе."
+        [ "$(grep -Fc '    local raw merged section mac name band down up iface lease_ip dns_name dhcp_mode host_section' "$backend_file" || true)" = "1" ] ||
+            die "Не найден список локальных переменных RPC-обработчика."
+
+        mdns_helper="$tmp_dir/mdns-helper.sh"
+        mdns_patch="$tmp_dir/mdns-backend.awk"
+        if grep -Fq 'append_mdns_records() {' "$backend_file"; then
+            insert_helper=0
+        else
+            insert_helper=1
+            [ "$(grep -Fc 'list_devices() {' "$backend_file" || true)" = "1" ] ||
+                die "Не найдено место для mDNS-помощника."
+        fi
+
+        cat > "$mdns_helper" <<'MDM_MDNS_HELPER'
+append_mdns_records() {
+    local output_file="$1" mdns_hosts_json mdns_services_json mdns_host_keys mdns_host_key mdns_host_ip mdns_label
+
+    [ -n "$output_file" ] || return 0
+    command -v ubus >/dev/null 2>&1 || return 0
+    ubus -v list umdns >/dev/null 2>&1 || return 0
+
+    # Refresh cached discovery, but do not alter service configuration or
+    # enable autostart. Discovered information is only a read-only name source.
+    ubus call umdns update >/dev/null 2>&1 || true
+    sleep 1
+
+    mdns_hosts_json=$(ubus call umdns hosts 2>/dev/null)
+    if [ -n "$mdns_hosts_json" ] && json_load "$mdns_hosts_json" 2>/dev/null; then
+        json_get_keys mdns_host_keys
+        for mdns_host_key in $mdns_host_keys; do
+            [ -n "$mdns_host_key" ] || continue
+            # Skip UUID/hash-like hostnames which are not useful display names.
+            case "$mdns_host_key" in
+                ????????-????-????-????-????????????.local|Android_fdd????????????????????????????????.local)
+                    continue ;;
+            esac
+            if ! json_select "$mdns_host_key" 2>/dev/null; then
+                continue
+            fi
+            mdns_host_ip=""
+            json_get_var mdns_host_ip ipv4
+            json_select ..
+            if ipv4_valid "$mdns_host_ip"; then
+                mdns_label=${mdns_host_key%.local}
+                mdns_label=$(name_clean "$mdns_label")
+                case "$mdns_label" in
+                    ''|localhost|unknown|Unknown) continue ;;
+                esac
+                printf 'H|%s|%s\n' "$mdns_host_ip" "$mdns_label" >> "$output_file"
+            fi
+        done
+    fi
+
+    mdns_services_json=$(ubus call umdns browse '{"array":true,"address":true}' 2>/dev/null)
+    [ -n "$mdns_services_json" ] || return 0
+
+    # Prefer human-facing service labels over generic hostnames:
+    # Google Cast fn=, Android TV Remote, AirPlay, and similar names.
+    printf '%s\n' "$mdns_services_json" | awk '
+        function flush_record(    label, priority, n, i, address) {
+            if (instance == "") return
+            label = ""
+            priority = 0
+            if (service == "_googlecast._tcp") {
+                if (fn != "") { label = fn; priority = 100 }
+            } else if (service == "_androidtvremote2._tcp") {
+                label = instance; priority = 90
+            } else if (service == "_airplay._tcp" ||
+                       service == "_raop._tcp" ||
+                       service == "_companion-link._tcp") {
+                label = instance; priority = 80
+            }
+            if (label != "") {
+                gsub(/[|\t\r\n]/, " ", label)
+                n = split(ips, addresses, " ")
+                for (i = 1; i <= n; i++) {
+                    address = addresses[i]
+                    if (address ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/)
+                        printf "S|%s|%s|%d\n", address, label, priority
+                }
+            }
+        }
+        BEGIN { service = ""; instance = ""; fn = ""; ips = ""; in_ipv4 = 0 }
+        {
+            if ($0 ~ /^        "_[^"]+\._tcp"[[:space:]]*:[[:space:]]*\{/) {
+                service = $0
+                sub(/^        "/, "", service)
+                sub(/".*/, "", service)
+                next
+            }
+            if (service != "" && $0 ~ /^                ".*"[[:space:]]*:[[:space:]]*\{/) {
+                flush_record()
+                instance = $0
+                sub(/^                "/, "", instance)
+                sub(/"[[:space:]]*:[[:space:]]*\{[[:space:]]*$/, "", instance)
+                fn = ""
+                ips = ""
+                in_ipv4 = 0
+                next
+            }
+            if (instance != "") {
+                if ($0 ~ /"fn=/) {
+                    fn = $0
+                    sub(/^.*"fn=/, "", fn)
+                    sub(/".*$/, "", fn)
+                }
+                if ($0 ~ /"ipv4"[[:space:]]*:[[:space:]]*\[/) {
+                    in_ipv4 = 1
+                    next
+                }
+                if (in_ipv4) {
+                    if ($0 ~ /\]/) { in_ipv4 = 0; next }
+                    if ($0 ~ /"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+"/) {
+                        address = $0
+                        sub(/^[[:space:]]*"/, "", address)
+                        sub(/".*$/, "", address)
+                        ips = ips (ips == "" ? "" : " ") address
+                    }
+                }
+                if ($0 ~ /^                \}[,]?[[:space:]]*$/) {
+                    flush_record()
+                    instance = ""
+                    fn = ""
+                    ips = ""
+                    in_ipv4 = 0
+                    next
+                }
+            }
+            if ($0 ~ /^        \}[,]?[[:space:]]*$/) service = ""
+        }
+        END { flush_record() }
+    ' >> "$output_file"
+}
+MDM_MDNS_HELPER
+
+        cat > "$mdns_patch" <<'MDM_MDNS_PATCH'
+{
+    if ($0 == "list_devices() {" && insert_helper == 1) {
+        while ((getline helper_line < helper_file) > 0)
+            print helper_line
+        close(helper_file)
+    }
+
+    if ($0 == "    local raw merged section mac name band down up iface lease_ip dns_name dhcp_mode host_section")
+        $0 = "    local raw merged section mac name band down up iface lease_ip dns_name dhcp_mode host_section discovered_name"
+
+    if ($0 == "    # Standard OpenWrt static DHCP reservations: expose reserved IPs even while")
+        print "    append_mdns_records \"$raw\""
+
+    # Keep IPv6 neighbor records from overriding the IPv4 key used for mDNS joins.
+    if ($0 == "            if ($3 != \"\") ip[m]=$3;")
+        $0 = "            if ($3 ~ /^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$/) ip[m]=$3;"
+
+    if ($0 == "        $1 == \"R\" {") {
+        print "        $1 == \"H\" {"
+        print "            ip_key=$2"
+        print "            if (ip_key ~ /^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$/ && $3 != \"\" && mdns_hostname[ip_key] == \"\")"
+        print "                mdns_hostname[ip_key]=$3"
+        print "        }"
+        print "        $1 == \"S\" {"
+        print "            ip_key=$2"
+        print "            priority=$4+0"
+        print "            if (ip_key ~ /^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$/ && $3 != \"\" && priority > service_priority[ip_key]) {"
+        print "                service_label[ip_key]=$3"
+        print "                service_priority[ip_key]=priority"
+        print "            }"
+        print "        }"
+        print $0
+        next
+    }
+
+    if (index($0, "mode[m];") > 0 && index($0, "printf") > 0) {
+        print "                preferred=service_label[ip[m]];"
+        print "                if (preferred == \"\") preferred=mdns_hostname[ip[m]];"
+        print "                printf \"%s|%s|%s|%s|%d|%d|%s|%s|%s|%s|%s|%s|%s\\n\", m, ip[m], host[m], iface[m], online[m]+0, registered[m]+0, name[m], band[m], down[m], up[m], dns[m], mode[m], preferred;"
+        next
+    }
+
+    if (index($0, "dns_name dhcp_mode; do") > 0)
+        sub(/dns_name dhcp_mode; do/, "dns_name dhcp_mode discovered_name; do")
+
+    if (index($0, "json_add_string hostname \"$host\"") > 0) {
+        print
+        print "        json_add_string discovered_name \"$discovered_name\""
+        next
+    }
+
+    print
+}
+MDM_MDNS_PATCH
+
+        awk -v helper_file="$mdns_helper" -v insert_helper="$insert_helper" -f "$mdns_patch" "$backend_file" > "$tmp_dir/backend.mdns" ||
+            die "Не удалось добавить mDNS-обнаружение в RPC-обработчик."
+        grep -Fq 'append_mdns_records "$raw"' "$tmp_dir/backend.mdns" ||
+            die "Не удалось подключить mDNS-обнаружение к списку устройств."
+        grep -Fq 'mdns_hostname[ip_key]' "$tmp_dir/backend.mdns" ||
+            die "Не удалось добавить обработку mDNS-имён хостов."
+        grep -Fq 'service_label[ip_key]' "$tmp_dir/backend.mdns" ||
+            die "Не удалось добавить обработку читаемых имён mDNS-служб."
+        grep -Fq 'json_add_string discovered_name "$discovered_name"' "$tmp_dir/backend.mdns" ||
+            die "Не удалось добавить discovered_name в RPC-ответ."
+        sh -n "$tmp_dir/backend.mdns" ||
+            die "RPC-обработчик с mDNS не прошёл проверку shell-синтаксиса."
+        mv "$tmp_dir/backend.mdns" "$backend_file" ||
+            die "Не удалось сохранить RPC-обработчик с mDNS."
+    fi
+
+    if ! grep -Fq 'return (d.discovered_name || "").trim()' "$js_file"; then
+        [ "$(grep -Fc 'return usefulHostname(d) || localDeviceLabel(d);' "$js_file" || true)" = "1" ] ||
+            die "Не найден участок выбора отображаемого имени в интерфейсе."
+        [ "$(grep -Fc 'return !(d.name && d.name.trim()) && !usefulHostname(d);' "$js_file" || true)" = "1" ] ||
+            die "Не найден участок определения неопознанных устройств."
+        [ "$(grep -Fc 'var suggested = usefulHostname(d);' "$js_file" || true)" = "1" ] ||
+            die "Не найдено поле предложенного имени для регистрации."
+        [ "$(grep -Fc "var searchable = [name, d.hostname, d.mac, d.ip].join(' ').toLocaleLowerCase();" "$js_file" || true)" = "1" ] ||
+            die "Не найдено поле поиска устройств."
+        [ "$(grep -Fc 'У устройств без имени автоматически формируется подпись по типу подключения' "$js_file" || true)" = "1" ] ||
+            die "Не найдено пояснение к автоматическим именам."
+
+        ui_patch="$tmp_dir/mdns-ui.awk"
+        cat > "$ui_patch" <<'MDM_MDNS_UI'
+{
+    if (index($0, "return !(d.name && d.name.trim()) && !usefulHostname(d);")) {
+        prefix=$0
+        sub(/return.*/, "", prefix)
+        $0=prefix "return !(d.name && d.name.trim()) && !((d.discovered_name || \"\").trim()) && !usefulHostname(d);"
+    }
+
+    if (index($0, "return usefulHostname(d) || localDeviceLabel(d);")) {
+        prefix=$0
+        sub(/return.*/, "", prefix)
+        $0=prefix "return (d.discovered_name || \"\").trim() || usefulHostname(d) || 'Неизвестное устройство';"
+    }
+
+    if (index($0, "var suggested = usefulHostname(d);")) {
+        prefix=$0
+        sub(/var suggested.*/, "", prefix)
+        $0=prefix "var suggested = (d.discovered_name || \"\").trim() || usefulHostname(d);"
+    }
+
+    if (index($0, "var searchable = [name, d.hostname, d.mac, d.ip].join")) {
+        prefix=$0
+        sub(/var searchable.*/, "", prefix)
+        $0=prefix "var searchable = [name, d.discovered_name, d.hostname, d.mac, d.ip].join(' ').toLocaleLowerCase();"
+    }
+
+    if (index($0, "function isLocalAutoLabel(d)"))
+        sub(/isLocalAutoLabel/, "isUnidentifiedDevice")
+
+    if (index($0, "isLocalAutoLabel(d) ?")) {
+        sub(/isLocalAutoLabel/, "isUnidentifiedDevice")
+        sub(/Автоимя · только в приложении/, "Имя не обнаружено в DHCP/mDNS")
+    }
+
+    if (index($0, "У устройств без имени автоматически формируется подпись по типу подключения и окончанию MAC-адреса.")) {
+        sub(/У устройств без имени автоматически формируется подпись по типу подключения и окончанию MAC-адреса\. Это имя существует только в этом интерфейсе и не записывается в DHCP, hostname или системную конфигурацию\./,
+            "Сначала используются читаемые имена mDNS-служб, затем имя хоста из mDNS и hostname из DHCP. Если имя не найдено, отображается «Неизвестное устройство». Обнаруженные имена не записываются автоматически в системную конфигурацию.")
+    }
+    print
+}
+MDM_MDNS_UI
+
+        awk -f "$ui_patch" "$js_file" > "$tmp_dir/main.mdns.js" ||
+            die "Не удалось обновить выбор имени в интерфейсе."
+        grep -Fq 'return (d.discovered_name || "").trim()' "$tmp_dir/main.mdns.js" ||
+            die "Проверка выбора имени из mDNS не пройдена."
+        grep -Fq 'Имя не обнаружено в DHCP/mDNS' "$tmp_dir/main.mdns.js" ||
+            die "Проверка подписи для неопознанных устройств не пройдена."
+        grep -Fq 'var suggested = (d.discovered_name || "").trim() || usefulHostname(d);' "$tmp_dir/main.mdns.js" ||
+            die "Не удалось использовать найденное имя в форме регистрации."
+        mv "$tmp_dir/main.mdns.js" "$js_file" ||
+            die "Не удалось сохранить интерфейс с поддержкой mDNS."
+    fi
+}
+
 validate_payload() {
     [ -d "$package_dir" ] || die "В архиве отсутствует каталог приложения."
     [ -f "$package_dir/root/usr/share/luci/menu.d/luci-app-my-device-manager.json" ] ||
@@ -155,8 +454,9 @@ validate_payload() {
 do_check() {
     download_source
     apply_device_hostname_precedence_fix
+    apply_mdns_discovery_patch
     validate_payload
-    log "Проверка успешна: архив, имя устройства из DHCP и обязательные файлы LuCI корректны."
+    log "Проверка успешна: архив, DHCP/mDNS-обнаружение и файлы LuCI корректны."
 }
 
 do_install() {
@@ -166,6 +466,7 @@ do_install() {
 
     download_source
     apply_device_hostname_precedence_fix
+    apply_mdns_discovery_patch
     validate_payload
 
     mkdir -p "$STATE_DIR"
