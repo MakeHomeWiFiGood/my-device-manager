@@ -623,7 +623,6 @@ MDM_UFP_PATCH
             die "Не найден выбор отображаемого имени для расширения UFP."
         [ "$(grep -Fc 'var searchable = [name, d.discovered_name, d.hostname, d.mac, d.ip].join' "$js_file" || true)" = "1" ] ||
             die "Не найден поиск устройств для расширения UFP."
-        [ "$(grep -Fc 'E(''td'', {}, [E(''strong'', {}, name)' "$js_file" || true)" -ge "0" ] 2>/dev/null || true
 
         ui_patch="$tmp_dir/ufp-ui.awk"
         cat > "$ui_patch" <<'MDM_UFP_UI'
