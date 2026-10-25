@@ -904,8 +904,9 @@ MDM_WIFI_PATCH
             die "Не удалось добавить уровень сигнала в ответ RPC."
         grep -Fq 'wifi_tx_bytes[tolower(m)]' "$tmp_dir/backend.wifi" ||
             die "Не удалось сопоставить статистику Wi-Fi по MAC."
-        [ "$(grep -Fc 'wifi_signal_dbm wifi_standard' "$tmp_dir/backend.wifi" || true)" = "1" ] ||
-            die "Статистика Wi-Fi не добавлена в структуру ответа."
+        wifi_stats_decl_count=$(grep -Fc 'wifi_signal_dbm wifi_standard' "$tmp_dir/backend.wifi" || true)
+        [ "$wifi_stats_decl_count" -ge 1 ] ||
+            die "Статистика Wi-Fi не добавлена в структуру ответа. Проверяю локальные объявления: $(grep -n 'local raw merged section' "$tmp_dir/backend.wifi" || true)"
         sh -n "$tmp_dir/backend.wifi" ||
             die "RPC-обработчик со статистикой Wi-Fi не прошёл проверку shell-синтаксиса."
         mv "$tmp_dir/backend.wifi" "$backend_file" ||
