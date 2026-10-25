@@ -51,18 +51,19 @@ jobs:
           test -n "$SDK_DIR"
           echo "SDK_DIR=$SDK_DIR" >> "$GITHUB_ENV"
 
-      - name: Register package in the LuCI feed
+      - name: Register package with the SDK build system
         shell: bash
         run: |
           set -euo pipefail
           cd "$SDK_DIR"
-          PACKAGE_FEED_DIR="feeds/luci/applications/luci-app-my-device-manager"
-          mkdir -p "$PACKAGE_FEED_DIR"
-          cp -a "$SOURCE_DIR/luci-app-my-device-manager/." "$PACKAGE_FEED_DIR/"
-          ./scripts/feeds update -i luci
-          ./scripts/feeds install -p luci luci-app-my-device-manager
+          PACKAGE_DIR="package/luci-app-my-device-manager"
+          mkdir -p "$PACKAGE_DIR"
+          cp -a "$SOURCE_DIR/luci-app-my-device-manager/." "$PACKAGE_DIR/"
+          # Packages placed in the SDK's top-level package/ directory must refer
+          # to the LuCI feed makefile by absolute SDK-relative path.
+          sed -i 's|^include ../../luci.mk$|include $(TOPDIR)/feeds/luci/luci.mk|' "$PACKAGE_DIR/Makefile"
+          test -f feeds/luci/luci.mk
           make defconfig
-          test -f package/feeds/luci/luci-app-my-device-manager/Makefile
           grep -q 'luci-app-my-device-manager' tmp/.packageinfo
 
       - name: Compile APK
@@ -70,7 +71,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "$SDK_DIR"
-          make package/feeds/luci/luci-app-my-device-manager/compile V=s
+          make package/luci-app-my-device-manager/compile V=s
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
           mapfile -t PACKAGES < <(find bin/packages -type f -name 'luci-app-my-device-manager*.apk' -print)
           if [ "${#PACKAGES[@]}" -ne 1 ]; then
