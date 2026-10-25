@@ -44,10 +44,10 @@ jobs:
           cp install.sh artifacts/install.sh
           sha256sum artifacts/install.sh > artifacts/install.sh.sha256
           cat > artifacts/INSTALL.txt <<'EOF'
-          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.14)
+          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.15)
           
           Run as root:
-            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.14/install.sh
+            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.15/install.sh
             sh /root/mdm-install.sh install
           
           To remove the installed app and restore files backed up by the installer:
@@ -65,18 +65,21 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish My Device Manager v0.2.14 — per-device Wi-Fi band selection
+      - name: Publish My Device Manager v0.2.15 — MAC registration fix and Wi-Fi band selection
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.2.14
+          tag_name: v0.2.15
           target_commitish: ${{ github.sha }}
-          name: My Device Manager v0.2.14 — per-device Wi-Fi band selection
+          name: My Device Manager v0.2.15 — per-device Wi-Fi band selection
           overwrite_files: true
           generate_release_notes: true
           files: artifacts/*
           body: |
-            Adds persistent per-device Wi-Fi band selection for registered devices:
+            Fixes the shared MAC-address validator used by both manual registration
+            and the register action on a discovered device. The installer tests valid
+            colon/hyphen-separated addresses in either letter case and rejects malformed
+            input. Adds persistent per-device Wi-Fi band selection for registered devices:
             2.4 GHz only, 5 GHz only, or both bands without an MDM-created restriction
             (the client chooses its band). Unregistered clients are marked
             "Устройство не зарегистрировано". Applying a restriction may briefly
