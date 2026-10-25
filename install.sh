@@ -115,6 +115,31 @@ download_source() {
     package_dir="$(cat "$tmp_dir/package-dir.list")"
 }
 
+apply_device_hostname_precedence_fix() {
+    local backend_file fixed_line legacy_count
+
+    backend_file="$package_dir/root/usr/libexec/rpcd/luci.my_device_manager"
+    [ -f "$backend_file" ] || die "Не найден обработчик списка устройств."
+
+    fixed_line='if ($4 != "" && host[m] == "") host[m]=$4;'
+    if grep -Fq "$fixed_line" "$backend_file"; then
+        :
+    else
+        legacy_count=$(grep -Fc 'if ($4 != "") host[m]=$4;' "$backend_file" || true)
+        [ "$legacy_count" = "1" ] ||
+            die "Не удалось безопасно определить участок, отвечающий за имя устройства."
+        sed 's/if (\$4 != "") host\[m\]=\$4;/if ($4 != "" \&\& host[m] == "") host[m]=$4;/' \
+            "$backend_file" > "$tmp_dir/backend.patched" ||
+            die "Не удалось исправить приоритет имени устройства."
+        grep -Fq "$fixed_line" "$tmp_dir/backend.patched" ||
+            die "Проверка исправления имени устройства не пройдена."
+        mv "$tmp_dir/backend.patched" "$backend_file" ||
+            die "Не удалось сохранить исправление имени устройства."
+    fi
+
+    sh -n "$backend_file" || die "RPCD-обработчик не прошёл проверку shell-синтаксиса."
+}
+
 validate_payload() {
     [ -d "$package_dir" ] || die "В архиве отсутствует каталог приложения."
     [ -f "$package_dir/root/usr/share/luci/menu.d/luci-app-my-device-manager.json" ] ||
@@ -129,8 +154,9 @@ validate_payload() {
 
 do_check() {
     download_source
+    apply_device_hostname_precedence_fix
     validate_payload
-    log "Проверка успешна: архив и обязательные файлы LuCI корректны."
+    log "Проверка успешна: архив, имя устройства из DHCP и обязательные файлы LuCI корректны."
 }
 
 do_install() {
@@ -139,6 +165,7 @@ do_install() {
     [ -d /www/luci-static ] || die "Не найден LuCI в /www/luci-static. Установи LuCI перед этим скриптом."
 
     download_source
+    apply_device_hostname_precedence_fix
     validate_payload
 
     mkdir -p "$STATE_DIR"
