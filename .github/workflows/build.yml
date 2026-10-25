@@ -51,24 +51,34 @@ jobs:
           test -n "$SDK_DIR"
           echo "SDK_DIR=$SDK_DIR" >> "$GITHUB_ENV"
 
-      - name: Register package in the LuCI feed tree
+      - name: Register the package through a local feed
         shell: bash
         run: |
           set -euo pipefail
           cd "$SDK_DIR"
           ./scripts/feeds update luci
-          FEED_PACKAGE_DIR="feeds/luci/applications/luci-app-my-device-manager"
-          mkdir -p "$FEED_PACKAGE_DIR"
-          cp -a "$SOURCE_DIR/luci-app-my-device-manager/." "$FEED_PACKAGE_DIR/"
-          # OpenWrt's feed index is generated before our package is copied.
-          # Create the same package/feeds symlink that feeds install normally adds.
-          mkdir -p package/feeds/luci
-          ln -sfn ../../../feeds/luci/applications/luci-app-my-device-manager package/feeds/luci/luci-app-my-device-manager
-          test -f package/feeds/luci/luci-app-my-device-manager/Makefile
-          test -f feeds/luci/luci.mk
-          echo "=== Registered package target ==="
-          readlink -f package/feeds/luci/luci-app-my-device-manager
-          sed -n '1,100p' package/feeds/luci/luci-app-my-device-manager/Makefile
+
+          LOCAL_FEED_DIR="$RUNNER_TEMP/mdm-feed"
+          PACKAGE_DIR="$LOCAL_FEED_DIR/luci-app-my-device-manager"
+          mkdir -p "$PACKAGE_DIR"
+          cp -a "$SOURCE_DIR/luci-app-my-device-manager/." "$PACKAGE_DIR/"
+          # A custom feed is outside the cloned LuCI checkout, so use the helper
+          # from the SDK's LuCI feed by absolute TOPDIR-relative path.
+          if ! grep -Eq '^include[[:space:]].*luci\.mk([[:space:]]*)$' "$PACKAGE_DIR/Makefile"; then
+            echo "::error::No LuCI make helper include was found in the package Makefile"
+            exit 1
+          fi
+          sed -i -E '/^include[[:space:]].*luci\.mk[[:space:]]*$/c\include $(TOPDIR)/feeds/luci/luci.mk' "$PACKAGE_DIR/Makefile"
+
+          if [ ! -f feeds.conf ]; then
+            cp feeds.conf.default feeds.conf
+          fi
+          printf '\nsrc-link mdm %s\n' "$LOCAL_FEED_DIR" >> feeds.conf
+          ./scripts/feeds update mdm
+          ./scripts/feeds list -r mdm
+          ./scripts/feeds install -p mdm luci-app-my-device-manager
+          test -f package/feeds/mdm/luci-app-my-device-manager/Makefile
+          sed -n '1,80p' package/feeds/mdm/luci-app-my-device-manager/Makefile
           make defconfig
 
       - name: Compile APK
@@ -76,7 +86,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "$SDK_DIR"
-          make package/feeds/luci/luci-app-my-device-manager/compile V=s
+          make package/feeds/mdm/luci-app-my-device-manager/compile V=s
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
           mapfile -t PACKAGES < <(find bin/packages -type f -name 'luci-app-my-device-manager*.apk' -print)
           if [ "${#PACKAGES[@]}" -ne 1 ]; then
