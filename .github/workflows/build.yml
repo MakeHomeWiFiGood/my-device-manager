@@ -1,4 +1,4 @@
-name: Build OpenWrt package
+name: Validate OpenWrt installer
 
 on:
   push:
@@ -10,11 +10,11 @@ permissions:
   contents: write
 
 concurrency:
-  group: mdm-build-${{ github.ref }}
+  group: mdm-installer-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
+  validate:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
@@ -30,74 +30,38 @@ jobs:
           mkdir -p "$RUNNER_TEMP/mdm-source"
           tar -xzf "$RUNNER_TEMP/mdm-source.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/mdm-source"
           "$RUNNER_TEMP/mdm-source/check-source.sh"
-          echo "SOURCE_DIR=$RUNNER_TEMP/mdm-source" >> "$GITHUB_ENV"
+          test -f "$RUNNER_TEMP/mdm-source/luci-app-my-device-manager/root/usr/share/luci/menu.d/luci-app-my-device-manager.json"
+          test -f "$RUNNER_TEMP/mdm-source/luci-app-my-device-manager/root/usr/share/rpcd/acl.d/luci-app-my-device-manager.json"
 
-      - name: Install build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses-dev libssl-dev rsync unzip file wget curl zstd python3 nodejs
-
-      - name: Download and verify OpenWrt 25.12.4 SDK
+      - name: Validate installer and prepare release assets
         shell: bash
         run: |
           set -euo pipefail
-          SDK_URL='https://downloads.openwrt.org/releases/25.12.4/targets/mediatek/filogic/openwrt-sdk-25.12.4-mediatek-filogic_gcc-14.3.0_musl.Linux-x86_64.tar.zst'
-          SDK_SHA256='411a2277ca10f909c30275a506aab4dc28a4f1281d7fda4f19faaa2ded6630bb'
-          curl --fail --location --retry 3 "$SDK_URL" --output "$RUNNER_TEMP/openwrt-sdk.tar.zst"
-          echo "$SDK_SHA256  $RUNNER_TEMP/openwrt-sdk.tar.zst" | sha256sum --check
-          mkdir -p "$RUNNER_TEMP/sdk"
-          tar --zstd -xf "$RUNNER_TEMP/openwrt-sdk.tar.zst" -C "$RUNNER_TEMP/sdk"
-          SDK_DIR="$(find "$RUNNER_TEMP/sdk" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
-          test -n "$SDK_DIR"
-          echo "SDK_DIR=$SDK_DIR" >> "$GITHUB_ENV"
+          sh -n install.sh
+          grep -Fq 'SOURCE_REF="fd659704f3f5a236b8e0b3b2fabd121b10a65470"' install.sh
+          mkdir -p artifacts
+          cp install.sh artifacts/install.sh
+          sha256sum artifacts/install.sh > artifacts/install.sh.sha256
+          cat > artifacts/INSTALL.txt <<'EOF'
+          My Device Manager — direct installer for OpenWrt 25.12.x
+          
+          Run as root:
+            wget -O /tmp/mdm-install.sh https://raw.githubusercontent.com/MakeHomeWiFiGood/my-device-manager/main/install.sh
+            sh /tmp/mdm-install.sh install
+          
+          To remove the installed app and restore files backed up by the installer:
+            sh /tmp/mdm-install.sh uninstall
+          
+          Requires LuCI and access to raw.githubusercontent.com.
+          This is an early scaffold. Wi-Fi band enforcement and per-device speed
+          enforcement are not implemented. It does not configure mwan3, Tachyon,
+          proxy routing, or other firewall policies.
+          EOF
 
-      - name: Register the package in an indexed local feed
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$SDK_DIR"
-          ./scripts/feeds update luci
-
-          # Keep the LuCI package in its expected subtree so ../../luci.mk resolves.
-          LUCI_APPS="$SDK_DIR/feeds/luci/applications"
-          PACKAGE_DIR="$LUCI_APPS/luci-app-my-device-manager"
-          mkdir -p "$PACKAGE_DIR"
-          cp -a "$SOURCE_DIR/luci-app-my-device-manager/." "$PACKAGE_DIR/"
-
-          if [ ! -f feeds.conf ]; then
-            cp feeds.conf.default feeds.conf
-          fi
-          # Reuse the SDK's LuCI application tree as a local feed so its normal
-          # indexer can see our newly added package before scripts/feeds install.
-          printf '\nsrc-link mdm %s\n' "$LUCI_APPS" >> feeds.conf
-          ./scripts/feeds update mdm
-          ./scripts/feeds list -r mdm | tee "$RUNNER_TEMP/mdm-feed-list.txt"
-          grep -Fq 'luci-app-my-device-manager' "$RUNNER_TEMP/mdm-feed-list.txt"
-          ./scripts/feeds install -p mdm luci-app-my-device-manager
-          test -f package/feeds/mdm/luci-app-my-device-manager/Makefile
-          make defconfig
-
-      - name: Compile APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$SDK_DIR"
-          make package/feeds/mdm/luci-app-my-device-manager/compile V=s
-          mkdir -p "$GITHUB_WORKSPACE/artifacts"
-          mapfile -t PACKAGES < <(find bin/packages -type f -name 'luci-app-my-device-manager*.apk' -print)
-          if [ "${#PACKAGES[@]}" -ne 1 ]; then
-            printf 'Expected one package APK, found %s:\n' "${#PACKAGES[@]}"
-            printf '%s\n' "${PACKAGES[@]}"
-            exit 1
-          fi
-          cp "${PACKAGES[0]}" "$GITHUB_WORKSPACE/artifacts/luci-app-my-device-manager-0.2.0-r1.apk"
-          cd "$GITHUB_WORKSPACE/artifacts"
-          sha256sum luci-app-my-device-manager-0.2.0-r1.apk > luci-app-my-device-manager-0.2.0-r1.apk.sha256
-
-      - name: Upload build artifact
+      - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: luci-app-my-device-manager-apk
+          name: my-device-manager-installer
           path: artifacts/*
           if-no-files-found: error
           retention-days: 30
@@ -121,12 +85,15 @@ jobs:
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.2.0' }}
           target_commitish: ${{ github.sha }}
-          name: My Device Manager ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.2.0' }}
+          name: My Device Manager ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.2.0' }} — script installer
           generate_release_notes: true
           files: artifacts/*
           body: |
-            Early scaffold for OpenWrt 25.12.x / MediaTek Filogic.
-            Includes client discovery, a MAC-keyed friendly-name registry, and
-            standard DHCP reservation management. Wi-Fi band enforcement and
-            per-device rate shaping are not implemented yet. Test on the target
-            firmware before use.
+            Script-based installer for the early My Device Manager LuCI scaffold,
+            targeting OpenWrt 25.12.x. Download install.sh and run it as root.
+            
+            Requires LuCI and access to raw.githubusercontent.com. It backs up
+            files it overwrites, preserves existing /etc/config/my_device_manager,
+            and supports uninstall/restore. Wi-Fi band enforcement and per-device
+            rate shaping are not implemented. It does not configure mwan3,
+            Tachyon, proxy routing, or other firewall policies.
