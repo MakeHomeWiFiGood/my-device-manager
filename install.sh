@@ -148,7 +148,7 @@ apply_mac_validation_patch() {
     backend_file="$package_dir/root/usr/libexec/rpcd/luci.my_device_manager"
     [ -f "$backend_file" ] || die "Не найден RPC-обработчик для исправления проверки MAC-адреса."
 
-    if ! grep -Fq '# MDM_MAC_VALIDATOR_V2' "$backend_file"; then
+    if ! grep -Fq '# MDM_MAC_VALIDATOR_V3' "$backend_file"; then
         [ "$(grep -Fc 'mac_valid() {' "$backend_file" || true)" = "1" ] ||
             die "Не удалось однозначно найти общую проверку MAC-адреса."
 
@@ -156,16 +156,17 @@ apply_mac_validation_patch() {
         cat > "$mac_patch" <<'MDM_MAC_VALIDATION'
 function print_mac_validator() {
     print "mac_valid() {"
-    print "    # MDM_MAC_VALIDATOR_V2: accept standard colon/hyphen octets, case-insensitively."
+    print "    # MDM_MAC_VALIDATOR_V3: shell-only MAC shape and hex validation for BusyBox."
     print "    local candidate"
-    print "    candidate=$(printf '%s' \"$1\" | tr '[:upper:]' '[:lower:]' | tr '-' ':')"
+    print "    candidate=$(printf '%s' \"$1\" | tr 'ABCDEF' 'abcdef' | sed 's/-/:/g')"
     print "    case \"$candidate\" in"
-    print "        ''|*[!0123456789abcdef:]*) return 1 ;;"
+    print "        ??:??:??:??:??:??) ;;"
+    print "        *) return 1 ;;"
     print "    esac"
-    print "    printf '%s\\n' \"$candidate\" | awk -F: '"
-    print "        NF != 6 { exit 1 }"
-    print "        { for (i=1; i<=6; i++) if ($i !~ /^[0123456789abcdef][0123456789abcdef]$/) exit 1 }"
-    print "    '"
+    print "    case \"$candidate\" in"
+    print "        *[!0123456789abcdef:]*) return 1 ;;"
+    print "    esac"
+    print "    return 0"
     print "}"
 }
 $0 == "mac_valid() {" && !replaced {
@@ -184,7 +185,7 @@ MDM_MAC_VALIDATION
 
         awk -f "$mac_patch" "$backend_file" > "$tmp_dir/backend.mac" ||
             die "Не удалось заменить общую проверку MAC-адреса."
-        grep -Fq '# MDM_MAC_VALIDATOR_V2' "$tmp_dir/backend.mac" ||
+        grep -Fq '# MDM_MAC_VALIDATOR_V3' "$tmp_dir/backend.mac" ||
             die "Исправление проверки MAC-адреса не обнаружено."
         sh -n "$tmp_dir/backend.mac" ||
             die "RPC-обработчик после исправления проверки MAC не прошёл проверку shell-синтаксиса."
@@ -194,15 +195,18 @@ MDM_MAC_VALIDATION
 
     test_file="$tmp_dir/mac-validator-test.sh"
     sed -n '/^mac_valid() {/,/^}/p' "$backend_file" > "$test_file"
-    grep -Fq '# MDM_MAC_VALIDATOR_V2' "$test_file" ||
+    grep -Fq '# MDM_MAC_VALIDATOR_V3' "$test_file" ||
         die "Не удалось подготовить тест общей проверки MAC-адреса."
     (
         . "$test_file"
         mac_valid 'aa:bb:cc:dd:ee:ff' || exit 1
         mac_valid 'AA:BB:CC:DD:EE:FF' || exit 1
         mac_valid 'aa-bb-cc-dd-ee-ff' || exit 1
+        mac_valid 'e8:88:43:6f:fb:e3' || exit 1
         if mac_valid 'aa:bb:cc:dd:ee:gg'; then exit 1; fi
         if mac_valid 'aa:bb:cc:dd:ee'; then exit 1; fi
+        if mac_valid '0:bb:cc:dd:ee:ff'; then exit 1; fi
+        if mac_valid 'aa:bb:cc:dd:ee:ffff'; then exit 1; fi
         if mac_valid ''; then exit 1; fi
     ) || die "Проверка MAC-адреса не прошла тесты валидного и невалидного ввода."
 
