@@ -71,7 +71,7 @@ jobs:
         with:
           tag_name: v0.2.15
           target_commitish: ${{ github.sha }}
-          name: My Device Manager v0.2.15 — per-device Wi-Fi band selection
+          name: My Device Manager v0.2.15 — MAC registration fix and Wi-Fi band selection
           overwrite_files: true
           generate_release_notes: true
           files: artifacts/*
