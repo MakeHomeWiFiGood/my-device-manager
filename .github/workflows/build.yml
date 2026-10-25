@@ -39,7 +39,7 @@ jobs:
           set -euo pipefail
           sh -n install.sh
           sh install.sh check
-          grep -Fq 'SOURCE_REF="fd659704f3f5a236b8e0b3b2fabd121b10a65470"' install.sh
+          grep -Fq 'SOURCE_REF="269211b675fd174053284591af1ec59e68cb2de0"' install.sh
           mkdir -p artifacts
           cp install.sh artifacts/install.sh
           sha256sum artifacts/install.sh > artifacts/install.sh.sha256
@@ -47,7 +47,7 @@ jobs:
           My Device Manager — direct installer for OpenWrt 25.12.x
           
           Run as root:
-            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.2/install.sh
+            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.3/install.sh
             sh /root/mdm-install.sh install
           
           To remove the installed app and restore files backed up by the installer:

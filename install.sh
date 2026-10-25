@@ -6,7 +6,7 @@ set -eu
 APP_NAME="My Device Manager"
 # Pin the source bundle to an immutable commit so the installer never silently
 # mixes its script with a changing set of source chunks.
-SOURCE_REF="fd659704f3f5a236b8e0b3b2fabd121b10a65470"
+SOURCE_REF="269211b675fd174053284591af1ec59e68cb2de0"
 SOURCE_BASE="https://raw.githubusercontent.com/MakeHomeWiFiGood/my-device-manager/${SOURCE_REF}"
 STATE_DIR="/root/.my-device-manager"
 BACKUP_DIR="${STATE_DIR}/backup"
