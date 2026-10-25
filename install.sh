@@ -141,6 +141,75 @@ apply_device_hostname_precedence_fix() {
 }
 
 
+
+apply_mac_validation_patch() {
+    local backend_file mac_patch test_file
+
+    backend_file="$package_dir/root/usr/libexec/rpcd/luci.my_device_manager"
+    [ -f "$backend_file" ] || die "Не найден RPC-обработчик для исправления проверки MAC-адреса."
+
+    if ! grep -Fq '# MDM_MAC_VALIDATOR_V2' "$backend_file"; then
+        [ "$(grep -Fc 'mac_valid() {' "$backend_file" || true)" = "1" ] ||
+            die "Не удалось однозначно найти общую проверку MAC-адреса."
+
+        mac_patch="$tmp_dir/mac-validation.awk"
+        cat > "$mac_patch" <<'MDM_MAC_VALIDATION'
+function print_mac_validator() {
+    print "mac_valid() {"
+    print "    # MDM_MAC_VALIDATOR_V2: accept standard colon/hyphen octets, case-insensitively."
+    print "    local candidate"
+    print "    candidate=$(printf '%s' \"$1\" | tr '[:upper:]' '[:lower:]' | tr '-' ':')"
+    print "    case \"$candidate\" in"
+    print "        ''|*[!0123456789abcdef:]*) return 1 ;;"
+    print "    esac"
+    print "    printf '%s\\n' \"$candidate\" | awk -F: '"
+    print "        NF != 6 { exit 1 }"
+    print "        { for (i=1; i<=6; i++) if ($i !~ /^[0123456789abcdef][0123456789abcdef]$/) exit 1 }"
+    print "    '"
+    print "}"
+}
+$0 == "mac_valid() {" && !replaced {
+    print_mac_validator()
+    in_function = 1
+    replaced = 1
+    next
+}
+in_function {
+    if ($0 ~ /^[[:space:]]*}[[:space:]]*$/) in_function = 0
+    next
+}
+{ print }
+END { if (!replaced || in_function) exit 1 }
+MDM_MAC_VALIDATION
+
+        awk -f "$mac_patch" "$backend_file" > "$tmp_dir/backend.mac" ||
+            die "Не удалось заменить общую проверку MAC-адреса."
+        grep -Fq '# MDM_MAC_VALIDATOR_V2' "$tmp_dir/backend.mac" ||
+            die "Исправление проверки MAC-адреса не обнаружено."
+        sh -n "$tmp_dir/backend.mac" ||
+            die "RPC-обработчик после исправления проверки MAC не прошёл проверку shell-синтаксиса."
+        mv "$tmp_dir/backend.mac" "$backend_file" ||
+            die "Не удалось сохранить исправление проверки MAC-адреса."
+    fi
+
+    test_file="$tmp_dir/mac-validator-test.sh"
+    sed -n '/^mac_valid() {/,/^}/p' "$backend_file" > "$test_file"
+    grep -Fq '# MDM_MAC_VALIDATOR_V2' "$test_file" ||
+        die "Не удалось подготовить тест общей проверки MAC-адреса."
+    (
+        . "$test_file"
+        mac_valid 'e8:88:43:6f:fb:e3' || exit 1
+        mac_valid 'E8:88:43:6F:FB:E3' || exit 1
+        mac_valid 'e8-88-43-6f-fb-e3' || exit 1
+        if mac_valid 'e8:88:43:6f:fb:eg'; then exit 1; fi
+        if mac_valid 'e8:88:43:6f:fb'; then exit 1; fi
+        if mac_valid ''; then exit 1; fi
+    ) || die "Проверка MAC-адреса не прошла тесты валидного и невалидного ввода."
+
+    log "Проверка MAC-адреса прошла тесты формата Poco X5 Pro и некорректного ввода."
+}
+
+
 apply_mdns_discovery_patch() {
     local backend_file js_file mdns_helper mdns_patch ui_patch insert_helper
 
@@ -1513,6 +1582,7 @@ validate_payload() {
 
 do_check() {
     download_source
+    apply_mac_validation_patch
     apply_device_hostname_precedence_fix
     apply_mdns_discovery_patch
     apply_ufp_fingerprint_patch
@@ -1528,6 +1598,7 @@ do_install() {
     [ -d /www/luci-static ] || die "Не найден LuCI в /www/luci-static. Установи LuCI перед этим скриптом."
 
     download_source
+    apply_mac_validation_patch
     apply_device_hostname_precedence_fix
     apply_mdns_discovery_patch
     apply_ufp_fingerprint_patch
