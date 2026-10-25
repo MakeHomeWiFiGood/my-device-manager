@@ -9,12 +9,12 @@ For unregistered clients, the interface first uses a readable name announced by 
 Run these commands in an SSH session as `root` on the router:
 
 ```sh
-wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.5/install.sh
+wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.6/install.sh
 sh /root/mdm-install.sh check
 sh /root/mdm-install.sh install
 ```
 
-The installer supports BusyBox `tar` on OpenWrt. It validates the source archive, safely patches the RPC backend and LuCI view to merge mDNS service names/hostnames by IPv4 address, preserves DHCP-hostname precedence over static reservation labels, backs up replaced files, preserves an existing `/etc/config/my_device_manager`, and restarts `rpcd`. mDNS discovery is optional and uses `umdns` only when that service is installed and running; the installer does not install it or change its startup settings. The installer requires LuCI and access to `raw.githubusercontent.com`.
+The installer supports BusyBox `tar` on OpenWrt. It validates the source archive, safely patches the RPC backend and LuCI view to merge mDNS service names/hostnames by IPv4 address, explicitly sets executable permissions on the RPC handler so `rpcd` can register it, preserves DHCP-hostname precedence over static reservation labels, backs up replaced files, preserves an existing `/etc/config/my_device_manager`, and restarts `rpcd`. mDNS discovery is optional and uses `umdns` only when that service is installed and running; the installer does not install it or change its startup settings. The installer requires LuCI and access to `raw.githubusercontent.com`.
 
 To remove the app and restore files that existed before installation, run:
 

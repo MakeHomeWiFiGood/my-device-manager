@@ -455,6 +455,13 @@ MDM_MDNS_UI
         mv "$tmp_dir/main.mdns.js" "$js_file" ||
             die "Не удалось сохранить интерфейс с поддержкой mDNS."
     fi
+
+    # rpcd discovers executable handlers under /usr/libexec/rpcd. Some source
+    # bundles store this script as 0644, and cp -a would preserve that mode.
+    chmod 0755 "$backend_file" ||
+        die "Не удалось выставить исполняемые права RPC-обработчика."
+    [ -x "$backend_file" ] ||
+        die "RPC-обработчик остался без права на исполнение."
 }
 
 validate_payload() {
@@ -463,6 +470,8 @@ validate_payload() {
         die "В архиве отсутствует запись меню LuCI."
     [ -f "$package_dir/root/usr/share/rpcd/acl.d/luci-app-my-device-manager.json" ] ||
         die "В архиве отсутствуют ACL rpcd."
+    [ -f "$package_dir/root/usr/libexec/rpcd/luci.my_device_manager" ] ||
+        die "В архиве отсутствует RPC-обработчик устройств."
     [ -d "$package_dir/root" ] || die "В архиве отсутствуют системные файлы приложения."
     if [ ! -d "$package_dir/htdocs" ] && [ ! -d "$package_dir/luasrc" ] && [ ! -d "$package_dir/ucode" ]; then
         die "В архиве отсутствуют файлы интерфейса LuCI."
@@ -492,6 +501,11 @@ do_install() {
 
     log "Устанавливаю файлы LuCI..."
     install_tree "$package_dir/root" /
+    # Be defensive: rpcd handlers must be executable regardless of archive mode.
+    chmod 0755 /usr/libexec/rpcd/luci.my_device_manager ||
+        die "Не удалось выставить исполняемые права RPC-обработчика."
+    [ -x /usr/libexec/rpcd/luci.my_device_manager ] ||
+        die "RPC-обработчик не исполняемый; rpcd не сможет зарегистрировать объект."
     install_tree "$package_dir/htdocs" /www
     install_tree "$package_dir/luasrc" /usr/lib/lua/luci
     install_tree "$package_dir/ucode" /usr/share/ucode/luci
