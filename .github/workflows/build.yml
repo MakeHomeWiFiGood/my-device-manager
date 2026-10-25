@@ -41,16 +41,11 @@ jobs:
           echo '=== PACKAGE TREE ==='
           find "$APP" -type f -print | sort
           echo '=== SOURCE FILE CONTENTS ==='
-          while IFS= read -r file; do
-            case "$file" in
-              *.lua|*.uc|*.ucode|*.js|*.json|*.htm|*.html|*.sh|*.css)
-                echo "===== $file ====="
-                sed -n '1,260p' "$file"
-                ;;
-            esac
-          done <<EOF
-$(find "$APP" -type f | sort)
-EOF
+          find "$APP" -type f \( -name '*.lua' -o -name '*.uc' -o -name '*.ucode' -o -name '*.js' -o -name '*.json' -o -name '*.htm' -o -name '*.html' -o -name '*.sh' -o -name '*.css' \) -print0 |
+            while IFS= read -r -d '' file; do
+              echo "===== $file ====="
+              sed -n '1,260p' "$file"
+            done
 
       - name: Validate installer and prepare download artifact
         shell: bash
