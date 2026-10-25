@@ -918,8 +918,8 @@ MDM_WIFI_PATCH
             die "Не найдено место для отображения статистики Wi-Fi."
         [ "$(grep -Fc 'd.fingerprint_device || d.fingerprint_vendor' "$js_file" || true)" = "1" ] ||
             die "Не найден блок сведений UFP для вставки статистики Wi-Fi."
-        [ "$(grep -Fc 'd.wifi_tx_bytes' "$backend_file" || true)" = "1" ] ||
-            die "Поля Wi-Fi-статистики не обнаружены в RPC-обработчике."
+        grep -Fq 'json_add_string wifi_tx_bytes "$wifi_tx_bytes"' "$backend_file" ||
+            die "Поле счётчика Wi-Fi-трафика не найдено в RPC-обработчике."
 
         ui_patch="$tmp_dir/wifi-ui.awk"
         cat > "$ui_patch" <<'MDM_WIFI_UI'
