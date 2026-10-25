@@ -39,7 +39,7 @@ jobs:
           set -euo pipefail
           app="$RUNNER_TEMP/mdm-source/luci-app-my-device-manager"
           echo '===== RPC BACKEND ====='
-          sed -n '1,320p' "$app/root/usr/libexec/rpcd/luci.my_device_manager"
+          sed -n '1,700p' "$app/root/usr/libexec/rpcd/luci.my_device_manager"
           echo '===== RELEVANT UI SOURCE FILES ====='
           find "$app" -type f \( -name '*.js' -o -name '*.uc' \) -print
           echo '===== NAME DISPLAY LOGIC ====='
