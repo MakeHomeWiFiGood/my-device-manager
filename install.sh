@@ -874,8 +874,8 @@ MDM_WIFI_HELPER
         next
     }
 
-    if ($0 == "dns_name dhcp_mode discovered_name fingerprint_vendor fingerprint_device fingerprint_device_name; do")
-        $0 = "dns_name dhcp_mode discovered_name fingerprint_vendor fingerprint_device fingerprint_device_name wifi_iface wifi_frequency_mhz wifi_signal_dbm wifi_standard wifi_rx_rate_mbps wifi_tx_rate_mbps wifi_rx_bytes wifi_tx_bytes; do"
+    if (index($0, "dns_name dhcp_mode discovered_name fingerprint_vendor fingerprint_device fingerprint_device_name; do") > 0)
+        sub(/dns_name dhcp_mode discovered_name fingerprint_vendor fingerprint_device fingerprint_device_name; do/, "dns_name dhcp_mode discovered_name fingerprint_vendor fingerprint_device fingerprint_device_name wifi_iface wifi_frequency_mhz wifi_signal_dbm wifi_standard wifi_rx_rate_mbps wifi_tx_rate_mbps wifi_rx_bytes wifi_tx_bytes; do")
 
     if ($0 == "        json_add_string fingerprint_device_name \"$fingerprint_device_name\"") {
         print
@@ -904,6 +904,8 @@ MDM_WIFI_PATCH
             die "Не удалось добавить уровень сигнала в ответ RPC."
         grep -Fq 'wifi_tx_bytes[tolower(m)]' "$tmp_dir/backend.wifi" ||
             die "Не удалось сопоставить статистику Wi-Fi по MAC."
+        grep -Fq 'wifi_rx_bytes wifi_tx_bytes; do' "$tmp_dir/backend.wifi" ||
+            die "Не удалось добавить поля Wi-Fi-статистики в цикл чтения строк."
         wifi_stats_decl_count=$(grep -Fc 'wifi_signal_dbm wifi_standard' "$tmp_dir/backend.wifi" || true)
         [ "$wifi_stats_decl_count" -ge 1 ] ||
             die "Статистика Wi-Fi не добавлена в структуру ответа. Проверяю локальные объявления: $(grep -n 'local raw merged section' "$tmp_dir/backend.wifi" || true)"
