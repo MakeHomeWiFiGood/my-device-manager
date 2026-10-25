@@ -51,22 +51,26 @@ jobs:
           test -n "$SDK_DIR"
           echo "SDK_DIR=$SDK_DIR" >> "$GITHUB_ENV"
 
-      - name: Prepare LuCI feed and package
+      - name: Register package in the LuCI feed
         shell: bash
         run: |
           set -euo pipefail
           cd "$SDK_DIR"
-          ./scripts/feeds update luci
-          mkdir -p package/luci-app-my-device-manager
-          cp -a "$SOURCE_DIR/luci-app-my-device-manager/." package/luci-app-my-device-manager/
+          PACKAGE_FEED_DIR="feeds/luci/applications/luci-app-my-device-manager"
+          mkdir -p "$PACKAGE_FEED_DIR"
+          cp -a "$SOURCE_DIR/luci-app-my-device-manager/." "$PACKAGE_FEED_DIR/"
+          ./scripts/feeds update -i luci
+          ./scripts/feeds install -p luci luci-app-my-device-manager
           make defconfig
+          test -f package/feeds/luci/luci-app-my-device-manager/Makefile
+          grep -q 'luci-app-my-device-manager' tmp/.packageinfo
 
       - name: Compile APK
         shell: bash
         run: |
           set -euo pipefail
           cd "$SDK_DIR"
-          make package/luci-app-my-device-manager/compile V=s
+          make package/feeds/luci/luci-app-my-device-manager/compile V=s
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
           mapfile -t PACKAGES < <(find bin/packages -type f -name 'luci-app-my-device-manager*.apk' -print)
           if [ "${#PACKAGES[@]}" -ne 1 ]; then
@@ -86,11 +90,26 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish GitHub Release for version tags
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Check whether initial release exists
+        id: release_check
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view v0.2.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish GitHub Release
+        if: (github.ref == 'refs/heads/main' && steps.release_check.outputs.exists == 'false') || startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          name: My Device Manager ${{ github.ref_name }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.2.0' }}
+          target_commitish: ${{ github.sha }}
+          name: My Device Manager ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.2.0' }}
           generate_release_notes: true
           files: artifacts/*
           body: |
