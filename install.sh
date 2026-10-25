@@ -1570,6 +1570,317 @@ MDM_BAND_ACL
         die "Не удалось выставить исполняемые права RPC-обработчика."
 }
 
+
+apply_two_level_registration_patch() {
+    local backend_file js_file acl_file helper_file helper_patch local_patch dispatch_patch schema_patch ui_patch acl_patch
+
+    backend_file="$package_dir/root/usr/libexec/rpcd/luci.my_device_manager"
+    js_file="$package_dir/htdocs/luci-static/resources/view/my-device-manager/main.js"
+    acl_file="$package_dir/root/usr/share/rpcd/acl.d/luci-app-my-device-manager.json"
+    [ -f "$backend_file" ] || die "Не найден RPC-обработчик для двухуровневой регистрации."
+    [ -f "$js_file" ] || die "Не найден интерфейс для двухуровневой регистрации."
+    [ -f "$acl_file" ] || die "Не найден ACL rpcd для DHCP-регистрации."
+
+    # The ordinary Register action stores only the My Device Manager record.
+    # Keep MAC-format validation; band selection and the registry are MAC-keyed.
+    if ! grep -Fq '# MDM_TWO_LEVEL_LOCAL_REGISTER' "$backend_file"; then
+        local_patch="$tmp_dir/registration-local.awk"
+        cat > "$local_patch" <<'MDM_LOCAL_REGISTER'
+{
+    if ($0 == "            register)") in_register = 1
+    print
+    if (in_register && index($0, "ip=$(read_arg ip)") > 0 && !added) {
+        print "                ip=\"\" # MDM_TWO_LEVEL_LOCAL_REGISTER"
+        added = 1
+    }
+    if (in_register && $0 == "                ;;") in_register = 0
+}
+END { if (!added) exit 1 }
+MDM_LOCAL_REGISTER
+        awk -f "$local_patch" "$backend_file" > "$tmp_dir/backend.local-register" ||
+            die "Не удалось отделить регистрацию в приложении от DHCP."
+        grep -Fq '# MDM_TWO_LEVEL_LOCAL_REGISTER' "$tmp_dir/backend.local-register" ||
+            die "Обычная регистрация всё ещё может передавать IP в DHCP."
+        sh -n "$tmp_dir/backend.local-register" ||
+            die "RPC-обработчик локальной регистрации не прошёл проверку shell-синтаксиса."
+        mv "$tmp_dir/backend.local-register" "$backend_file" ||
+            die "Не удалось сохранить режим регистрации только в My Device Manager."
+    fi
+
+    # The explicit DHCP action validates both the app registry and the static
+    # lease target. It only edits /etc/config/dhcp and reloads dnsmasq.
+    if ! grep -Fq 'register_dhcp_locked() {' "$backend_file"; then
+        helper_file="$tmp_dir/dhcp-register-helper.sh"
+        helper_patch="$tmp_dir/dhcp-register-helper.awk"
+        cat > "$helper_file" <<'MDM_DHCP_REGISTER_HELPER'
+register_dhcp_locked() {
+    local mac="$1" ip="$2" name="$3" registry_section stored host_section host_mac host_ip normalized_host_mac
+    local dns_name dhcp_section tx_dir
+
+    DHCP_REGISTER_ERROR=dhcp_registration_failed
+    mac=$(mac_normalize "$mac")
+    if ! mac_valid "$mac"; then
+        DHCP_REGISTER_ERROR=invalid_mac
+        return 1
+    fi
+    if ! ipv4_valid "$ip"; then
+        DHCP_REGISTER_ERROR=dhcp_ip_invalid
+        return 1
+    fi
+
+    registry_section=$(section_for_mac "$mac")
+    [ -n "$registry_section" ] || {
+        DHCP_REGISTER_ERROR=device_not_registered
+        return 1
+    }
+    stored=$(uci -q get "$PACKAGE.$registry_section.mac" 2>/dev/null || true)
+    if [ "$stored" != "$mac" ]; then
+        DHCP_REGISTER_ERROR=device_not_registered
+        return 1
+    fi
+
+    if [ -n "$(uci changes dhcp 2>/dev/null)" ] ||
+       [ -n "$(uci changes "$PACKAGE" 2>/dev/null)" ]; then
+        DHCP_REGISTER_ERROR=configuration_busy
+        return 1
+    fi
+    [ -f /etc/config/dhcp ] || {
+        DHCP_REGISTER_ERROR=dhcp_registration_failed
+        return 1
+    }
+
+    for host_section in $(uci -q show dhcp 2>/dev/null | sed -n 's/^dhcp\.\\([^=]*\\)=host$/\\1/p'); do
+        host_mac=$(uci -q get "dhcp.$host_section.mac" 2>/dev/null || true)
+        host_ip=$(uci -q get "dhcp.$host_section.ip" 2>/dev/null || true)
+        normalized_host_mac=$(mac_normalize "$host_mac")
+        if [ "$normalized_host_mac" = "$mac" ]; then
+            if [ "$host_ip" = "$ip" ]; then
+                # Idempotent: a static reservation for this exact pair already exists.
+                return 0
+            fi
+            DHCP_REGISTER_ERROR=dhcp_mac_conflict
+            return 1
+        fi
+        if [ -n "$host_ip" ] && [ "$host_ip" = "$ip" ]; then
+            DHCP_REGISTER_ERROR=dhcp_ip_conflict
+            return 1
+        fi
+    done
+
+    tx_dir=$(mktemp -d /tmp/mdm-dhcp-register.XXXXXX) || {
+        DHCP_REGISTER_ERROR=dhcp_registration_failed
+        return 1
+    }
+    if ! cp -p /etc/config/dhcp "$tx_dir/dhcp"; then
+        rm -rf "$tx_dir"
+        DHCP_REGISTER_ERROR=dhcp_registration_failed
+        return 1
+    fi
+
+    [ -n "$name" ] || name=$(uci -q get "$PACKAGE.$registry_section.name" 2>/dev/null || true)
+    dns_name=$(dns_name_for "$mac" "$name")
+    [ -n "$dns_name" ] || dns_name=device
+    dhcp_section=$(uci add dhcp host 2>/dev/null) || {
+        rm -rf "$tx_dir"
+        DHCP_REGISTER_ERROR=dhcp_registration_failed
+        return 1
+    }
+    if ! uci set "dhcp.$dhcp_section.name=$dns_name" >/dev/null 2>&1 ||
+       ! uci set "dhcp.$dhcp_section.mac=$mac" >/dev/null 2>&1 ||
+       ! uci set "dhcp.$dhcp_section.ip=$ip" >/dev/null 2>&1 ||
+       ! uci commit dhcp >/dev/null 2>&1; then
+        uci revert dhcp >/dev/null 2>&1 || true
+        cp -p "$tx_dir/dhcp" /etc/config/dhcp 2>/dev/null || true
+        rm -rf "$tx_dir"
+        DHCP_REGISTER_ERROR=dhcp_registration_failed
+        return 1
+    fi
+
+    if [ -x /etc/init.d/dnsmasq ] && ! /etc/init.d/dnsmasq reload >/dev/null 2>&1; then
+        uci revert dhcp >/dev/null 2>&1 || true
+        cp -p "$tx_dir/dhcp" /etc/config/dhcp 2>/dev/null || true
+        /etc/init.d/dnsmasq reload >/dev/null 2>&1 || true
+        rm -rf "$tx_dir"
+        DHCP_REGISTER_ERROR=dhcp_reload_failed
+        return 1
+    fi
+
+    rm -rf "$tx_dir"
+    return 0
+}
+
+MDM_DHCP_REGISTER_HELPER
+
+        awk -v helper_file="$helper_file" '
+            BEGIN {
+                while ((getline line < helper_file) > 0) helper[++count] = line
+                close(helper_file)
+            }
+            $0 == "list_devices() {" && !inserted {
+                for (i = 1; i <= count; i++) print helper[i]
+                inserted = 1
+            }
+            { print }
+            END { if (!inserted) exit 1 }
+        ' "$backend_file" > "$tmp_dir/backend.dhcp-register-helper" ||
+            die "Не удалось добавить отдельную DHCP-регистрацию."
+        grep -Fq 'register_dhcp_locked() {' "$tmp_dir/backend.dhcp-register-helper" ||
+            die "Функция DHCP-регистрации не добавлена."
+        sh -n "$tmp_dir/backend.dhcp-register-helper" ||
+            die "Помощник DHCP-регистрации не прошёл проверку shell-синтаксиса."
+        mv "$tmp_dir/backend.dhcp-register-helper" "$backend_file" ||
+            die "Не удалось сохранить помощник DHCP-регистрации."
+    fi
+
+    if ! grep -Fq 'register_dhcp)' "$backend_file"; then
+        dispatch_patch="$tmp_dir/dhcp-register-dispatch.awk"
+        cat > "$dispatch_patch" <<'MDM_DHCP_REGISTER_DISPATCH'
+{
+    if ($0 == "            set_band_mode)") {
+        print "            register_dhcp)"
+        print "                mac=$(read_arg mac)"
+        print "                ip=$(read_arg ip)"
+        print "                name=$(read_arg name)"
+        print "                if ! lock_begin; then"
+        print "                    emit_error 'configuration_busy'"
+        print "                elif register_dhcp_locked \"$mac\" \"$ip\" \"$name\"; then"
+        print "                    printf '{\"ok\":true,\"mac\":\"%s\",\"ip\":\"%s\"}\\n' \"$(mac_normalize \"$mac\")\" \"$ip\""
+        print "                else"
+        print "                    emit_error \"$DHCP_REGISTER_ERROR\""
+        print "                fi"
+        print "                lock_end"
+        print "                ;;"
+    }
+    print
+}
+MDM_DHCP_REGISTER_DISPATCH
+        awk -f "$dispatch_patch" "$backend_file" > "$tmp_dir/backend.dhcp-register-dispatch" ||
+            die "Не удалось добавить RPC-метод DHCP-регистрации."
+        grep -Fq 'register_dhcp)' "$tmp_dir/backend.dhcp-register-dispatch" ||
+            die "RPC-метод DHCP-регистрации не добавлен."
+        mv "$tmp_dir/backend.dhcp-register-dispatch" "$backend_file" ||
+            die "Не удалось сохранить RPC-метод DHCP-регистрации."
+    fi
+
+    if ! grep -Fq '"register_dhcp":{"mac":"str","ip":"str","name":"str"}' "$backend_file"; then
+        schema_patch="$tmp_dir/dhcp-register-schema.awk"
+        cat > "$schema_patch" <<'MDM_DHCP_REGISTER_SCHEMA'
+{
+    old = "\"set_band_mode\":{\"mac\":\"str\",\"band_mode\":\"str\"}"
+    new = old ",\"register_dhcp\":{\"mac\":\"str\",\"ip\":\"str\",\"name\":\"str\"}"
+    if (index($0, old) > 0 && index($0, "\"register_dhcp\"") == 0) sub(old, new)
+    print
+}
+MDM_DHCP_REGISTER_SCHEMA
+        awk -f "$schema_patch" "$backend_file" > "$tmp_dir/backend.dhcp-register-schema" ||
+            die "Не удалось обновить схему RPC для DHCP-регистрации."
+        grep -Fq '"register_dhcp":{"mac":"str","ip":"str","name":"str"}' "$tmp_dir/backend.dhcp-register-schema" ||
+            die "Схема RPC DHCP-регистрации не добавлена."
+        mv "$tmp_dir/backend.dhcp-register-schema" "$backend_file" ||
+            die "Не удалось сохранить схему RPC DHCP-регистрации."
+    fi
+
+    if ! grep -Fq '"register_dhcp"' "$acl_file"; then
+        acl_patch="$tmp_dir/dhcp-register-acl.awk"
+        cat > "$acl_patch" <<'MDM_DHCP_REGISTER_ACL'
+{
+    if (index($0, "\"set_band_mode\"") > 0 && index($0, "\"register_dhcp\"") == 0)
+        sub("\"set_band_mode\"", "\"set_band_mode\", \"register_dhcp\"")
+    print
+}
+MDM_DHCP_REGISTER_ACL
+        awk -f "$acl_patch" "$acl_file" > "$tmp_dir/acl.dhcp-register" ||
+            die "Не удалось добавить разрешение RPC на DHCP-регистрацию."
+        grep -Fq '"register_dhcp"' "$tmp_dir/acl.dhcp-register" ||
+            die "ACL rpcd не содержит метод DHCP-регистрации."
+        mv "$tmp_dir/acl.dhcp-register" "$acl_file" ||
+            die "Не удалось сохранить ACL rpcd DHCP-регистрации."
+    fi
+
+    if ! grep -Fq 'var callRegisterDhcp = rpc.declare({' "$js_file"; then
+        ui_patch="$tmp_dir/dhcp-register-ui.awk"
+        cat > "$ui_patch" <<'MDM_DHCP_REGISTER_UI'
+{
+    if ($0 == "var callSetBandMode = rpc.declare({") {
+        print "var callRegisterDhcp = rpc.declare({"
+        print "        object: 'luci.my_device_manager',"
+        print "        method: 'register_dhcp',"
+        print "        params: ['mac', 'ip', 'name']"
+        print "});"
+        print ""
+    }
+
+    if (index($0, "actions.push(bandSelect);") > 0 && index($0, "registerDhcpButton") == 0) {
+        print
+        print "\t\t\t\tvar dhcpMode = String(d.dhcp_mode || '').toLowerCase();"
+        print "\t\t\t\tvar hasDhcpReservation = /static|reserved|reservation|registered|host/.test(dhcpMode);"
+        print "\t\t\t\tif (d.ip && !hasDhcpReservation) {"
+        print "\t\t\t\t\tvar dhcpRegisterButton = E('button', { 'class': 'cbi-button cbi-button-action', 'click': function() {"
+        print "\t\t\t\t\t\tif (!window.confirm('Создать статическую DHCP-резервацию для ' + d.mac + ' с IP ' + d.ip + '?')) return;"
+        print "\t\t\t\t\t\tdhcpRegisterButton.disabled = true;"
+        print "\t\t\t\t\t\tcallRegisterDhcp(d.mac, d.ip, d.name || name).then(function(result) {"
+        print "\t\t\t\t\t\t\tif (result && result.ok === false) {"
+        print "\t\t\t\t\t\t\t\tui.addNotification(null, E('p', {}, operationErrorMessage(result.error)), 'error');"
+        print "\t\t\t\t\t\t\t\tdhcpRegisterButton.disabled = false;"
+        print "\t\t\t\t\t\t\t\treturn;"
+        print "\t\t\t\t\t\t\t}"
+        print "\t\t\t\t\t\t\twindow.location.reload();"
+        print "\t\t\t\t\t\t}).catch(function(err) {"
+        print "\t\t\t\t\t\t\tui.addNotification(null, E('p', {}, rpcErrorMessage(err)), 'error');"
+        print "\t\t\t\t\t\t\tdhcpRegisterButton.disabled = false;"
+        print "\t\t\t\t\t\t});"
+        print "\t\t\t\t\t} }, 'DHCP Регистрация');"
+        print "\t\t\t\t\tactions.push(dhcpRegisterButton);"
+        print "\t\t\t\t}"
+        next
+    }
+
+    if (index($0, "device_not_registered:") > 0 && index($0, "dhcp_ip_invalid:") == 0) {
+        print "\t\tdhcp_ip_invalid: 'Для DHCP-регистрации нужен корректный IPv4-адрес.',"
+        print "\t\tdhcp_mac_conflict: 'Этот MAC уже связан с другой DHCP-резервацией. Сначала проверь раздел DHCP и DNS.',"
+        print "\t\tdhcp_ip_conflict: 'Этот IP уже зарезервирован для другого MAC-адреса.',"
+        print "\t\tdhcp_registration_failed: 'Не удалось создать DHCP-резервацию; конфигурация восстановлена.',"
+        print "\t\tdhcp_reload_failed: 'Не удалось применить DHCP-резервацию; выполнена попытка восстановления прежней конфигурации.',"
+    }
+
+    print
+}
+MDM_DHCP_REGISTER_UI
+        awk -f "$ui_patch" "$js_file" > "$tmp_dir/main.dhcp-register.js" ||
+            die "Не удалось добавить кнопку DHCP-регистрации."
+        grep -Fq 'callRegisterDhcp' "$tmp_dir/main.dhcp-register.js" ||
+            die "Не удалось подключить кнопку DHCP-регистрации к RPC."
+        grep -Fq 'DHCP Регистрация' "$tmp_dir/main.dhcp-register.js" ||
+            die "Не удалось добавить подпись DHCP-регистрации."
+        grep -Fq 'dhcp_ip_conflict:' "$tmp_dir/main.dhcp-register.js" ||
+            die "Не добавлены сообщения ошибок DHCP-регистрации."
+        if command -v node >/dev/null 2>&1; then
+            node --check "$tmp_dir/main.dhcp-register.js" ||
+                die "JavaScript DHCP-регистрации не прошёл проверку синтаксиса."
+        fi
+        mv "$tmp_dir/main.dhcp-register.js" "$js_file" ||
+            die "Не удалось сохранить кнопку DHCP-регистрации."
+    fi
+
+    grep -Fq '# MDM_TWO_LEVEL_LOCAL_REGISTER' "$backend_file" ||
+        die "Обычная регистрация не отделена от DHCP."
+    grep -Fq 'register_dhcp_locked() {' "$backend_file" ||
+        die "Отдельная функция DHCP-регистрации отсутствует."
+    grep -Fq 'register_dhcp)' "$backend_file" ||
+        die "RPC-метод DHCP-регистрации отсутствует."
+    grep -Fq '"register_dhcp":{"mac":"str","ip":"str","name":"str"}' "$backend_file" ||
+        die "Схема RPC DHCP-регистрации отсутствует."
+    grep -Fq '"register_dhcp"' "$acl_file" ||
+        die "ACL rpcd не разрешает DHCP-регистрацию."
+    grep -Fq 'MDM_TWO_LEVEL_LOCAL_REGISTER' "$backend_file" ||
+        die "Обычная регистрация не помечена как локальная."
+    sh -n "$backend_file" ||
+        die "RPC-обработчик двухуровневой регистрации не прошёл проверку shell-синтаксиса."
+    chmod 0755 "$backend_file" ||
+        die "Не удалось выставить исполняемые права RPC-обработчика."
+}
+
+
 validate_payload() {
     [ -d "$package_dir" ] || die "В архиве отсутствует каталог приложения."
     [ -f "$package_dir/root/usr/share/luci/menu.d/luci-app-my-device-manager.json" ] ||
@@ -1592,6 +1903,7 @@ do_check() {
     apply_ufp_fingerprint_patch
     apply_wifi_client_stats_patch
     apply_band_selection_patch
+    apply_two_level_registration_patch
     validate_payload
     log "Проверка успешна: архив, DHCP/mDNS, UFP, статистика Wi-Fi, выбор диапазона и пометка незарегистрированных устройств корректны."
 }
@@ -1608,6 +1920,7 @@ do_install() {
     apply_ufp_fingerprint_patch
     apply_wifi_client_stats_patch
     apply_band_selection_patch
+    apply_two_level_registration_patch
     validate_payload
 
     mkdir -p "$STATE_DIR"
