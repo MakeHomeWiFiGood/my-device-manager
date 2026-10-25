@@ -995,6 +995,507 @@ MDM_WIFI_UI
         die "RPC-обработчик остался без права на исполнение."
 }
 
+
+apply_band_selection_patch() {
+    local backend_file js_file acl_file helper_file dispatch_patch schema_patch ui_patch acl_patch unregister_patch
+
+    backend_file="$package_dir/root/usr/libexec/rpcd/luci.my_device_manager"
+    js_file="$package_dir/htdocs/luci-static/resources/view/my-device-manager/main.js"
+    acl_file="$package_dir/root/usr/share/rpcd/acl.d/luci-app-my-device-manager.json"
+    [ -f "$backend_file" ] || die "Не найден RPC-обработчик для выбора диапазона Wi-Fi."
+    [ -f "$js_file" ] || die "Не найден интерфейс для выбора диапазона Wi-Fi."
+    [ -f "$acl_file" ] || die "Не найден ACL rpcd для выбора диапазона Wi-Fi."
+
+    if ! grep -Fq 'band_mode_apply_locked() {' "$backend_file"; then
+        [ "$(grep -Fc 'list_devices() {' "$backend_file" || true)" = "1" ] ||
+            die "Не найдено безопасное место для функций выбора диапазона Wi-Fi."
+        [ "$(grep -Fc '        case "$method" in' "$backend_file" || true)" = "1" ] ||
+            die "Не найден диспетчер RPC для выбора диапазона Wi-Fi."
+
+        helper_file="$tmp_dir/band-helpers.sh"
+        cat > "$helper_file" <<'MDM_BAND_HELPERS'
+wifi_ap_sections() {
+    uci -q show wireless 2>/dev/null | sed -n 's/^wireless\.\([^=]*\)=wifi-iface$/\1/p'
+}
+
+wifi_section_band() {
+    local section="$1" radio band hwmode
+    radio=$(uci -q get "wireless.$section.device" 2>/dev/null || true)
+    [ -n "$radio" ] || return 1
+    [ "$(uci -q get "wireless.$radio.disabled" 2>/dev/null || true)" != "1" ] || return 1
+    band=$(uci -q get "wireless.$radio.band" 2>/dev/null || true)
+    case "$band" in
+        2g|5g|6g) printf '%s\n' "$band"; return 0 ;;
+    esac
+    hwmode=$(uci -q get "wireless.$radio.hwmode" 2>/dev/null || true)
+    case "$hwmode" in
+        *g*|*b*) printf '2g\n'; return 0 ;;
+        *a*) printf '5g\n'; return 0 ;;
+    esac
+    return 1
+}
+
+wifi_ap_enabled() {
+    [ "$(uci -q get "wireless.$1.mode" 2>/dev/null || true)" = "ap" ] || return 1
+    [ "$(uci -q get "wireless.$1.disabled" 2>/dev/null || true)" != "1" ] || return 1
+    wifi_section_band "$1" >/dev/null 2>&1
+}
+
+wifi_section_has_maclist() {
+    uci -q show "wireless.$1" 2>/dev/null | grep -Fq '.maclist='
+}
+
+wifi_maclist_has() {
+    uci -q show "wireless.$1" 2>/dev/null | awk -F"'" -v wanted="$2" '
+        /\.maclist=/ {
+            mac=tolower($2)
+            gsub(/-/, ":", mac)
+            if (mac == wanted) found=1
+        }
+        END { exit(found ? 0 : 1) }
+    '
+}
+
+band_safe_key() {
+    printf '%s' "$1" | tr -c 'A-Za-z0-9_' '_'
+}
+
+band_remove_acl_entries() {
+    local registry_section="$1" mac="$2" safe_keys safe iface original current_filter
+    safe_keys=$(uci -q show "$PACKAGE.$registry_section" 2>/dev/null |
+        sed -n "s/^$PACKAGE\.$registry_section\.band_acl_added_\([^=]*\)=.*/\1/p")
+    for safe in $safe_keys; do
+        iface=$(uci -q get "$PACKAGE.$registry_section.band_acl_section_$safe" 2>/dev/null || true)
+        original=$(uci -q get "$PACKAGE.$registry_section.band_acl_filter_changed_$safe" 2>/dev/null || true)
+        if [ -n "$iface" ] && uci -q get "wireless.$iface" >/dev/null 2>&1; then
+            current_filter=$(uci -q get "wireless.$iface.macfilter" 2>/dev/null || true)
+            # Remove only an MDM-owned entry while it is still a deny-list.
+            # If an administrator changed the filter to allow-list, preserve it.
+            if [ "$current_filter" = "deny" ] && wifi_maclist_has "$iface" "$mac"; then
+                uci -q del_list "wireless.$iface.maclist=$mac" >/dev/null 2>&1 || return 1
+            fi
+            if [ "$current_filter" = "deny" ] && [ -n "$original" ] && [ "$original" != "none" ] &&
+               ! wifi_section_has_maclist "$iface"; then
+                case "$original" in
+                    missing) uci -q delete "wireless.$iface.macfilter" >/dev/null 2>&1 || return 1 ;;
+                    disable) uci set "wireless.$iface.macfilter=disable" >/dev/null 2>&1 || return 1 ;;
+                esac
+            fi
+        fi
+        uci -q delete "$PACKAGE.$registry_section.band_acl_added_$safe" >/dev/null 2>&1 || true
+        uci -q delete "$PACKAGE.$registry_section.band_acl_section_$safe" >/dev/null 2>&1 || true
+        uci -q delete "$PACKAGE.$registry_section.band_acl_filter_changed_$safe" >/dev/null 2>&1 || true
+    done
+    return 0
+}
+
+band_preflight_peer() {
+    local target="$1" allowed="$2" target_ssid target_encryption target_key peer peer_band peer_ssid peer_encryption peer_key found
+    target_ssid=$(uci -q get "wireless.$target.ssid" 2>/dev/null || true)
+    target_encryption=$(uci -q get "wireless.$target.encryption" 2>/dev/null || true)
+    target_key=$(uci -q get "wireless.$target.key" 2>/dev/null || true)
+    found=0
+    for peer in $(wifi_ap_sections); do
+        wifi_ap_enabled "$peer" || continue
+        peer_band=$(wifi_section_band "$peer") || continue
+        [ "$peer_band" = "$allowed" ] || continue
+        peer_ssid=$(uci -q get "wireless.$peer.ssid" 2>/dev/null || true)
+        peer_encryption=$(uci -q get "wireless.$peer.encryption" 2>/dev/null || true)
+        peer_key=$(uci -q get "wireless.$peer.key" 2>/dev/null || true)
+        if [ "$peer_ssid" = "$target_ssid" ] &&
+           [ "$peer_encryption" = "$target_encryption" ] &&
+           [ "$peer_key" = "$target_key" ]; then
+            found=1
+            break
+        fi
+    done
+    [ "$found" = "1" ]
+}
+
+band_apply_acl() {
+    local registry_section="$1" mac="$2" mode="$3"
+    local iface wifi_band filter original safe found
+
+    [ "$mode" = "auto" ] && return 0
+
+    found=0
+    for iface in $(wifi_ap_sections); do
+        wifi_ap_enabled "$iface" || continue
+        wifi_band=$(wifi_section_band "$iface") || continue
+        [ "$wifi_band" = "$mode" ] && found=1
+    done
+    [ "$found" = "1" ] || return 11
+
+    # Don't strand a client: every AP being denied must have a matching AP
+    # on the permitted band with the same SSID, encryption mode and key.
+    for iface in $(wifi_ap_sections); do
+        wifi_ap_enabled "$iface" || continue
+        wifi_band=$(wifi_section_band "$iface") || continue
+        [ "$wifi_band" = "$mode" ] && continue
+        band_preflight_peer "$iface" "$mode" || return 16
+    done
+
+    for iface in $(wifi_ap_sections); do
+        wifi_ap_enabled "$iface" || continue
+        wifi_band=$(wifi_section_band "$iface") || continue
+        [ "$wifi_band" = "$mode" ] && continue
+
+        filter=$(uci -q get "wireless.$iface.macfilter" 2>/dev/null || true)
+        case "$filter" in
+            allow) return 12 ;;
+            deny) original=none ;;
+            disable|'')
+                # Enabling a dormant maclist could unexpectedly activate
+                # manual entries, so refuse rather than change its semantics.
+                if wifi_section_has_maclist "$iface"; then return 13; fi
+                if [ -n "$filter" ]; then original=disable; else original=missing; fi
+                ;;
+            *) return 14 ;;
+        esac
+        if wifi_maclist_has "$iface" "$mac"; then return 15; fi
+
+        if [ "$filter" != "deny" ]; then
+            uci set "wireless.$iface.macfilter=deny" >/dev/null 2>&1 || return 14
+        fi
+        uci add_list "wireless.$iface.maclist=$mac" >/dev/null 2>&1 || return 14
+
+        safe=$(band_safe_key "$iface")
+        uci set "$PACKAGE.$registry_section.band_acl_added_$safe=1" >/dev/null 2>&1 || return 14
+        uci set "$PACKAGE.$registry_section.band_acl_section_$safe=$iface" >/dev/null 2>&1 || return 14
+        uci set "$PACKAGE.$registry_section.band_acl_filter_changed_$safe=$original" >/dev/null 2>&1 || return 14
+    done
+    return 0
+}
+
+band_transaction_rollback() {
+    local dir="$1" reload_wifi="$2"
+    uci revert wireless >/dev/null 2>&1 || true
+    uci revert "$PACKAGE" >/dev/null 2>&1 || true
+    cp -p "$dir/wireless" /etc/config/wireless 2>/dev/null || true
+    cp -p "$dir/my_device_manager" "/etc/config/$PACKAGE" 2>/dev/null || true
+    if [ "$reload_wifi" = "1" ] && command -v wifi >/dev/null 2>&1; then
+        wifi reload >/dev/null 2>&1 || true
+    fi
+    rm -rf "$dir"
+}
+
+band_mode_apply_locked() {
+    local mac="$1" new_mode="$2" section stored old_mode tx_dir rc wireless_changes reload_needed
+    BAND_ERROR=band_mode_apply_failed
+    mac=$(mac_normalize "$mac")
+    if ! mac_valid "$mac"; then BAND_ERROR=invalid_mac; return 1; fi
+    case "$new_mode" in
+        auto|2g|5g) ;;
+        *) BAND_ERROR=band_mode_invalid; return 1 ;;
+    esac
+
+    section=$(section_for_mac "$mac")
+    stored=$(uci -q get "$PACKAGE.$section.mac" 2>/dev/null || true)
+    if [ "$stored" != "$mac" ]; then BAND_ERROR=device_not_registered; return 1; fi
+    old_mode=$(uci -q get "$PACKAGE.$section.band_mode" 2>/dev/null || true)
+    [ -n "$old_mode" ] || old_mode=auto
+    [ "$old_mode" != "$new_mode" ] || return 0
+
+    if [ -n "$(uci changes wireless 2>/dev/null)" ] ||
+       [ -n "$(uci changes "$PACKAGE" 2>/dev/null)" ]; then
+        BAND_ERROR=wireless_config_busy
+        return 1
+    fi
+    command -v wifi >/dev/null 2>&1 || { BAND_ERROR=wifi_reload_unavailable; return 1; }
+
+    tx_dir=$(mktemp -d /tmp/mdm-band-tx.XXXXXX) || { BAND_ERROR=backup_failed; return 1; }
+    cp -p /etc/config/wireless "$tx_dir/wireless" 2>/dev/null &&
+    cp -p "/etc/config/$PACKAGE" "$tx_dir/my_device_manager" 2>/dev/null || {
+        rm -rf "$tx_dir"
+        BAND_ERROR=backup_failed
+        return 1
+    }
+
+    band_remove_acl_entries "$section" "$mac" || {
+        band_transaction_rollback "$tx_dir" 0
+        BAND_ERROR=band_mode_apply_failed
+        return 1
+    }
+
+    if band_apply_acl "$section" "$mac" "$new_mode"; then
+        :
+    else
+        rc=$?
+        case "$rc" in
+            11) BAND_ERROR=wifi_band_not_found ;;
+            12) BAND_ERROR=wireless_allowlist_conflict ;;
+            13) BAND_ERROR=wireless_disabled_maclist_conflict ;;
+            14) BAND_ERROR=band_mode_apply_failed ;;
+            15) BAND_ERROR=wireless_maclist_conflict ;;
+            16) BAND_ERROR=wifi_band_pair_not_found ;;
+            *) BAND_ERROR=band_mode_apply_failed ;;
+        esac
+        band_transaction_rollback "$tx_dir" 0
+        return 1
+    fi
+
+    uci set "$PACKAGE.$section.band_mode=$new_mode" >/dev/null 2>&1 || {
+        band_transaction_rollback "$tx_dir" 0
+        BAND_ERROR=band_mode_apply_failed
+        return 1
+    }
+
+    wireless_changes=$(uci changes wireless 2>/dev/null)
+    reload_needed=0
+    if [ -n "$wireless_changes" ]; then
+        if ! uci commit wireless >/dev/null 2>&1; then
+            band_transaction_rollback "$tx_dir" 0
+            BAND_ERROR=band_mode_apply_failed
+            return 1
+        fi
+        reload_needed=1
+    fi
+    if ! uci commit "$PACKAGE" >/dev/null 2>&1; then
+        band_transaction_rollback "$tx_dir" 0
+        BAND_ERROR=band_mode_apply_failed
+        return 1
+    fi
+
+    if [ "$reload_needed" = "1" ] && ! wifi reload >/dev/null 2>&1; then
+        band_transaction_rollback "$tx_dir" 1
+        BAND_ERROR=wifi_reload_failed
+        return 1
+    fi
+    rm -rf "$tx_dir"
+    return 0
+}
+
+MDM_BAND_HELPERS
+
+        awk -v helper_file="$helper_file" '
+            BEGIN {
+                while ((getline line < helper_file) > 0) helper[++count] = line
+                close(helper_file)
+            }
+            $0 == "list_devices() {" && !inserted {
+                for (i = 1; i <= count; i++) print helper[i]
+                inserted = 1
+            }
+            { print }
+            END { if (!inserted) exit 1 }
+        ' "$backend_file" > "$tmp_dir/backend.band" ||
+            die "Не удалось добавить обработчик политик диапазона Wi-Fi."
+        mv "$tmp_dir/backend.band" "$backend_file" ||
+            die "Не удалось сохранить обработчик политик диапазона Wi-Fi."
+    fi
+
+    if ! grep -Fq 'band_mode_apply_locked "$mac" auto' "$backend_file"; then
+        unregister_patch="$tmp_dir/band-unregister.awk"
+        cat > "$unregister_patch" <<'MDM_BAND_UNREGISTER'
+/^unregister_device\(\) \{$/ { in_unreg=1 }
+in_unreg && $0 == "    backup_configs || { emit_error 'backup_failed'; return 1; }" && !done {
+    print "    saved_band_mode=$(uci -q get \"$PACKAGE.$section.band_mode\" 2>/dev/null || true)"
+    print "    if [ -n \"$saved_band_mode\" ] && [ \"$saved_band_mode\" != \"auto\" ]; then"
+    print "        if ! band_mode_apply_locked \"$mac\" auto; then"
+    print "            emit_error \"$BAND_ERROR\""
+    print "            return 1"
+    print "        fi"
+    print "    fi"
+    done=1
+}
+{ print }
+MDM_BAND_UNREGISTER
+        awk -f "$unregister_patch" "$backend_file" > "$tmp_dir/backend.unregister" ||
+            die "Не удалось добавить снятие ограничений при отмене регистрации."
+        grep -Fq 'band_mode_apply_locked "$mac" auto' "$tmp_dir/backend.unregister" ||
+            die "Не удалось подключить снятие ограничений перед отменой регистрации."
+        mv "$tmp_dir/backend.unregister" "$backend_file" ||
+            die "Не удалось сохранить снятие ограничений при отмене регистрации."
+    fi
+
+    if ! grep -Fq 'set_band_mode)' "$backend_file"; then
+        dispatch_patch="$tmp_dir/band-dispatch.awk"
+        cat > "$dispatch_patch" <<'MDM_BAND_DISPATCH'
+{
+    if ($0 == "            unregister)") {
+        print "            set_band_mode)"
+        print "                mac=$(read_arg mac)"
+        print "                band_mode=$(read_arg band_mode)"
+        print "                if ! lock_begin; then"
+        print "                    emit_error 'configuration_busy'"
+        print "                elif band_mode_apply_locked \"$mac\" \"$band_mode\"; then"
+        print "                    printf '{\"ok\":true,\"mac\":\"%s\",\"band_mode\":\"%s\"}\\n' \"$(mac_normalize \"$mac\")\" \"$band_mode\""
+        print "                else"
+        print "                    emit_error \"$BAND_ERROR\""
+        print "                fi"
+        print "                lock_end"
+        print "                ;;"
+    }
+    print
+}
+MDM_BAND_DISPATCH
+        awk -f "$dispatch_patch" "$backend_file" > "$tmp_dir/backend.dispatch" ||
+            die "Не удалось добавить RPC-метод выбора диапазона Wi-Fi."
+        grep -Fq 'set_band_mode)' "$tmp_dir/backend.dispatch" ||
+            die "Не удалось добавить RPC-метод выбора диапазона Wi-Fi."
+        mv "$tmp_dir/backend.dispatch" "$backend_file" ||
+            die "Не удалось сохранить RPC-метод выбора диапазона Wi-Fi."
+    fi
+
+    if ! grep -Fq '"set_band_mode":{"mac":"str","band_mode":"str"}' "$backend_file"; then
+        schema_patch="$tmp_dir/band-schema.awk"
+        cat > "$schema_patch" <<'MDM_BAND_SCHEMA'
+{
+    old = "\"unregister\":{\"mac\":\"str\"}"
+    new = old ",\"set_band_mode\":{\"mac\":\"str\",\"band_mode\":\"str\"}"
+    if (index($0, old) > 0 && index($0, "set_band_mode") == 0) sub(old, new)
+    print
+}
+MDM_BAND_SCHEMA
+        awk -f "$schema_patch" "$backend_file" > "$tmp_dir/backend.schema" ||
+            die "Не удалось обновить описание RPC-методов."
+        grep -Fq '"set_band_mode":{"mac":"str","band_mode":"str"}' "$tmp_dir/backend.schema" ||
+            die "Описание RPC-метода выбора диапазона Wi-Fi не добавлено."
+        mv "$tmp_dir/backend.schema" "$backend_file" ||
+            die "Не удалось сохранить описание RPC-методов."
+    fi
+
+    if ! grep -Fq 'callSetBandMode' "$js_file"; then
+        ui_patch="$tmp_dir/band-ui.awk"
+        cat > "$ui_patch" <<'MDM_BAND_UI'
+{
+    if (index($0, "var STYLE = ") > 0 && !call_added) {
+        print "var callSetBandMode = rpc.declare({"
+        print "        object: 'luci.my_device_manager',"
+        print "        method: 'set_band_mode',"
+        print "        params: ['mac', 'band_mode']"
+        print "});"
+        print ""
+        call_added=1
+    }
+
+    if (index($0, "@media(max-width:600px)") > 0 && index($0, "mdm-unregistered") == 0) {
+        print ".mdm-unregistered{display:inline-block;border-left:3px solid #f0c541;padding-left:7px;margin-top:4px;color:#f0d575;font-size:.82em}\\"
+    }
+    if (index($0, "@media(max-width:600px)") > 0 && index($0, "mdm-band-select") == 0) {
+        print ".mdm-band-select{min-width:205px;max-width:260px}\\"
+    }
+
+    if (index($0, "E('p', { 'style': 'margin:12px 0 0' }") > 0) {
+        $0 = "\t\t\tE('p', { 'style': 'margin:12px 0 0' }, 'Для зарегистрированных устройств можно выбрать только 2,4 ГГц, только 5 ГГц или оба диапазона без ограничений со стороны My Device Manager. В режиме двух диапазонов выбор остаётся за клиентом.'),"
+    }
+
+    if (index($0, "Приложение не меняет firewall") > 0) {
+        sub(/Приложение не меняет firewall, Wi-Fi ACL, tc, mwan3 или Tachyon\./,
+            "Выбор диапазона использует Wi-Fi ACL только для выбранного устройства и может кратковременно перезапустить точки доступа. Firewall, tc, mwan3 и Tachyon не меняются.")
+    }
+
+    if (index($0, "E('td', {}, E('span', { 'class': statusClass }, status)),") > 0 &&
+        index($0, "mdm-unregistered") == 0) {
+        old = "E('td', {}, E('span', { 'class': statusClass }, status)),"
+        new = "E('td', {}, [E('span', { 'class': statusClass }, status), !d.registered ? E('div', { 'class': 'mdm-unregistered' }, 'Устройство не зарегистрировано') : '']),"
+        sub(old, new)
+    }
+
+    if ($0 == "\t\tvar actions = [registerButton];" && !select_added) {
+        print
+        print "\t\t\tif (d.registered) {"
+        print "\t\t\t\tvar savedBandMode = d.band_mode || 'auto';"
+        print "\t\t\t\tvar bandSelect = E('select', { 'class': 'cbi-input-select mdm-band-select', 'aria-label': 'Диапазон Wi-Fi для ' + name }, ["
+        print "\t\t\t\t\tE('option', { 'value': 'auto' }, '2,4 + 5 ГГц — выбор клиента (без ограничений MDM)'),"
+        print "\t\t\t\t\tE('option', { 'value': '2g' }, 'Только 2,4 ГГц'),"
+        print "\t\t\t\t\tE('option', { 'value': '5g' }, 'Только 5 ГГц')"
+        print "\t\t\t\t]);"
+        print "\t\t\t\tbandSelect.value = savedBandMode;"
+        print "\t\t\t\tbandSelect.addEventListener('change', function() {"
+        print "\t\t\t\t\tvar selectedMode = bandSelect.value;"
+        print "\t\t\t\t\tif (!window.confirm('Применение выбора кратковременно перезапустит Wi-Fi. Устройство будет запрещено на другом диапазоне и должно переподключиться к разрешённому. Продолжить?')) {"
+        print "\t\t\t\t\t\tbandSelect.value = savedBandMode;"
+        print "\t\t\t\t\t\treturn;"
+        print "\t\t\t\t\t}"
+        print "\t\t\t\t\tbandSelect.disabled = true;"
+        print "\t\t\t\t\tcallSetBandMode(d.mac, selectedMode).then(function(result) {"
+        print "\t\t\t\t\t\tif (result && result.ok === false) {"
+        print "\t\t\t\t\t\t\tui.addNotification(null, E('p', {}, operationErrorMessage(result.error)), 'error');"
+        print "\t\t\t\t\t\t\tbandSelect.disabled = false;"
+        print "\t\t\t\t\t\t\tbandSelect.value = savedBandMode;"
+        print "\t\t\t\t\t\t\treturn;"
+        print "\t\t\t\t\t\t}"
+        print "\t\t\t\t\t\twindow.location.reload();"
+        print "\t\t\t\t\t}).catch(function(err) {"
+        print "\t\t\t\t\t\tui.addNotification(null, E('p', {}, rpcErrorMessage(err)), 'error');"
+        print "\t\t\t\t\t\tbandSelect.disabled = false;"
+        print "\t\t\t\t\t\tbandSelect.value = savedBandMode;"
+        print "\t\t\t\t\t});"
+        print "\t\t\t\t});"
+        print "\t\t\t\tactions.push(bandSelect);"
+        print "\t\t\t}"
+        select_added=1
+        next
+    }
+
+    if (index($0, "device_not_registered:") > 0 && index($0, "wifi_band_not_found:") == 0) {
+        print "\t\twifi_band_not_found: 'Не найдена активная точка доступа выбранного диапазона.',"
+        print "\t\twifi_band_pair_not_found: 'Не найден такой же SSID с совпадающей защитой на выбранном диапазоне. Во избежание потери доступа настройка не изменена.',"
+        print "\t\twireless_allowlist_conflict: 'В Wi-Fi настроен список разрешённых MAC-адресов. Существующая политика не изменена.',"
+        print "\t\twireless_disabled_maclist_conflict: 'У этой точки доступа есть неактивный список MAC-адресов. Сначала проверь его в настройках Wi-Fi.',"
+        print "\t\twireless_maclist_conflict: 'MAC-адрес уже есть в ручном Wi-Fi-списке. MDM не стал изменять это правило.',"
+        print "\t\twireless_config_busy: 'Есть несохранённые изменения Wi-Fi или My Device Manager. Сохрани или отмени их и повтори.',"
+        print "\t\twifi_reload_unavailable: 'Не найдена команда wifi для применения настроек.',"
+        print "\t\twifi_reload_failed: 'Не удалось применить Wi-Fi-конфигурацию; выполнена попытка восстановить прежнюю конфигурацию.',"
+        print "\t\tband_mode_invalid: 'Выбран неизвестный режим диапазона Wi-Fi.',"
+        print "\t\tband_mode_apply_failed: 'Не удалось применить выбор диапазона Wi-Fi; изменения отменены.',"
+    }
+
+    print
+}
+MDM_BAND_UI
+        awk -f "$ui_patch" "$js_file" > "$tmp_dir/main.band.js" ||
+            die "Не удалось добавить выбор диапазона Wi-Fi в LuCI."
+        grep -Fq 'callSetBandMode' "$tmp_dir/main.band.js" ||
+            die "Не удалось подключить выбор диапазона Wi-Fi к RPC."
+        grep -Fq 'Устройство не зарегистрировано' "$tmp_dir/main.band.js" ||
+            die "Не удалось добавить пометку для незарегистрированных устройств."
+        grep -Fq 'mdm-band-select' "$tmp_dir/main.band.js" ||
+            die "Не удалось добавить селектор диапазона Wi-Fi."
+        grep -Fq 'wifi_band_pair_not_found:' "$tmp_dir/main.band.js" ||
+            die "Не добавлена ошибка проверки совместимости Wi-Fi."
+        if command -v node >/dev/null 2>&1; then
+            node --check "$tmp_dir/main.band.js" ||
+                die "JavaScript интерфейса выбора диапазона Wi-Fi не прошёл синтаксическую проверку."
+        fi
+        mv "$tmp_dir/main.band.js" "$js_file" ||
+            die "Не удалось сохранить интерфейс выбора диапазона Wi-Fi."
+    fi
+
+    if ! grep -Fq '"set_band_mode"' "$acl_file"; then
+        acl_patch="$tmp_dir/band-acl.awk"
+        cat > "$acl_patch" <<'MDM_BAND_ACL'
+{
+    if (index($0, "\"unregister\"") > 0 && index($0, "set_band_mode") == 0)
+        sub("\"unregister\"", "\"unregister\", \"set_band_mode\"")
+    print
+}
+MDM_BAND_ACL
+        awk -f "$acl_patch" "$acl_file" > "$tmp_dir/acl.band.json" ||
+            die "Не удалось обновить ACL rpcd для выбора диапазона Wi-Fi."
+        grep -Fq '"set_band_mode"' "$tmp_dir/acl.band.json" ||
+            die "ACL rpcd не содержит право на выбор диапазона Wi-Fi."
+        mv "$tmp_dir/acl.band.json" "$acl_file" ||
+            die "Не удалось сохранить ACL rpcd."
+    fi
+
+    grep -Fq 'band_mode_apply_locked() {' "$backend_file" ||
+        die "Функция применения политики диапазона Wi-Fi отсутствует."
+    grep -Fq 'set_band_mode)' "$backend_file" ||
+        die "RPC-метод выбора диапазона Wi-Fi отсутствует."
+    grep -Fq '"set_band_mode":{"mac":"str","band_mode":"str"}' "$backend_file" ||
+        die "Описание RPC-метода выбора диапазона Wi-Fi отсутствует."
+    grep -Fq 'wifi reload' "$backend_file" ||
+        die "Не найден механизм применения Wi-Fi-политики."
+    grep -Fq 'band_mode_apply_locked "$mac" auto' "$backend_file" ||
+        die "Не подключено снятие ограничений перед отменой регистрации."
+    sh -n "$backend_file" ||
+        die "RPC-обработчик выбора диапазона Wi-Fi не прошёл проверку shell-синтаксиса."
+    chmod 0755 "$backend_file" ||
+        die "Не удалось выставить исполняемые права RPC-обработчика."
+}
+
 validate_payload() {
     [ -d "$package_dir" ] || die "В архиве отсутствует каталог приложения."
     [ -f "$package_dir/root/usr/share/luci/menu.d/luci-app-my-device-manager.json" ] ||
@@ -1015,8 +1516,9 @@ do_check() {
     apply_mdns_discovery_patch
     apply_ufp_fingerprint_patch
     apply_wifi_client_stats_patch
+    apply_band_selection_patch
     validate_payload
-    log "Проверка успешна: архив, DHCP/mDNS, UFP, статистика Wi-Fi и файлы LuCI корректны."
+    log "Проверка успешна: архив, DHCP/mDNS, UFP, статистика Wi-Fi, выбор диапазона и пометка незарегистрированных устройств корректны."
 }
 
 do_install() {
@@ -1029,6 +1531,7 @@ do_install() {
     apply_mdns_discovery_patch
     apply_ufp_fingerprint_patch
     apply_wifi_client_stats_patch
+    apply_band_selection_patch
     validate_payload
 
     mkdir -p "$STATE_DIR"
@@ -1052,6 +1555,20 @@ do_install() {
 do_uninstall() {
     require_root
     [ -d "$STATE_DIR" ] || die "Резервные данные установки не найдены."
+
+    # Remove MDM-owned Wi-Fi ACL entries before removing the app files.
+    # If cleanup fails, abort uninstall instead of leaving silent restrictions.
+    if [ -x /usr/libexec/rpcd/luci.my_device_manager ] && command -v uci >/dev/null 2>&1; then
+        for section in $(uci -q show my_device_manager 2>/dev/null | sed -n 's/^my_device_manager\.\([^.]*\)\.band_mode=.*/\1/p'); do
+            band_mode=$(uci -q get "my_device_manager.$section.band_mode" 2>/dev/null || true)
+            mac=$(uci -q get "my_device_manager.$section.mac" 2>/dev/null || true)
+            if [ -n "$mac" ] && [ -n "$band_mode" ] && [ "$band_mode" != "auto" ]; then
+                if ! printf '{"mac":"%s","band_mode":"auto"}\n' "$mac" | /usr/libexec/rpcd/luci.my_device_manager call set_band_mode >/dev/null 2>&1; then
+                    die "Не удалось снять ограничение Wi-Fi для $mac; приложение оставлено установленным для исправления."
+                fi
+            fi
+        done
+    fi
 
     log "Восстанавливаю файлы, существовавшие до установки..."
     if [ -f "$STATE_DIR/original-files" ]; then
