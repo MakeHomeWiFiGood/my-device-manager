@@ -38,6 +38,7 @@ jobs:
         run: |
           set -euo pipefail
           sh -n install.sh
+          sh install.sh check
           grep -Fq 'SOURCE_REF="fd659704f3f5a236b8e0b3b2fabd121b10a65470"' install.sh
           mkdir -p artifacts
           cp install.sh artifacts/install.sh
@@ -46,7 +47,7 @@ jobs:
           My Device Manager — direct installer for OpenWrt 25.12.x
           
           Run as root:
-            wget -O /tmp/mdm-install.sh https://raw.githubusercontent.com/MakeHomeWiFiGood/my-device-manager/main/install.sh
+            wget -O /tmp/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/latest/download/install.sh
             sh /tmp/mdm-install.sh install
           
           To remove the installed app and restore files backed up by the installer:
@@ -73,7 +74,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.2.0 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if gh release view v0.2.1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
@@ -83,9 +84,9 @@ jobs:
         if: (github.ref == 'refs/heads/main' && steps.release_check.outputs.exists == 'false') || startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.2.0' }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.2.1' }}
           target_commitish: ${{ github.sha }}
-          name: My Device Manager ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.2.0' }} — script installer
+          name: My Device Manager ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.2.1' }} — script installer
           generate_release_notes: true
           files: artifacts/*
           body: |
