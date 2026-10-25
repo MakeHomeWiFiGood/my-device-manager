@@ -51,29 +51,37 @@ jobs:
           test -n "$SDK_DIR"
           echo "SDK_DIR=$SDK_DIR" >> "$GITHUB_ENV"
 
-      - name: Register package with the SDK build system
+      - name: Register local package with the SDK
         shell: bash
         run: |
           set -euo pipefail
           cd "$SDK_DIR"
-          # The SDK carries feed indexes but not necessarily the feed source tree.
-          # Fetch LuCI itself so feeds/luci/luci.mk is available for package builds.
+          # LuCI's make helpers are part of the feed checkout, but the app itself
+          # is registered as a local SDK package to avoid stale feed indexes.
           ./scripts/feeds update luci
-          PACKAGE_FEED_DIR="feeds/luci/applications/luci-app-my-device-manager"
-          mkdir -p "$PACKAGE_FEED_DIR"
-          cp -a "$SOURCE_DIR/luci-app-my-device-manager/." "$PACKAGE_FEED_DIR/"
-          ./scripts/feeds update -i luci
-          ./scripts/feeds install -p luci luci-app-my-device-manager
+          PACKAGE_DIR="package/luci-app-my-device-manager"
+          mkdir -p "$PACKAGE_DIR"
+          cp -a "$SOURCE_DIR/luci-app-my-device-manager/." "$PACKAGE_DIR/"
+          echo "=== Source package files ==="
+          find "$PACKAGE_DIR" -maxdepth 3 -type f -print | sort
+          echo "=== Source package Makefile ==="
+          sed -n '1,160p' "$PACKAGE_DIR/Makefile"
+          if ! grep -Eq '^include[[:space:]].*luci\.mk([[:space:]]*)$' "$PACKAGE_DIR/Makefile"; then
+            echo "::error::No LuCI make helper include was found in the package Makefile"
+            exit 1
+          fi
+          sed -i -E '/^include[[:space:]].*luci\.mk[[:space:]]*$/c\include $(TOPDIR)/feeds/luci/luci.mk' "$PACKAGE_DIR/Makefile"
+          echo "=== SDK-local Makefile after adapting LuCI include ==="
+          sed -n '1,160p' "$PACKAGE_DIR/Makefile"
+          test -f feeds/luci/luci.mk
           make defconfig
-          test -f package/feeds/luci/luci-app-my-device-manager/Makefile
-          grep -q 'luci-app-my-device-manager' tmp/.packageinfo
 
       - name: Compile APK
         shell: bash
         run: |
           set -euo pipefail
           cd "$SDK_DIR"
-          make package/feeds/luci/luci-app-my-device-manager/compile V=s
+          make package/luci-app-my-device-manager/compile V=s
           mkdir -p "$GITHUB_WORKSPACE/artifacts"
           mapfile -t PACKAGES < <(find bin/packages -type f -name 'luci-app-my-device-manager*.apk' -print)
           if [ "${#PACKAGES[@]}" -ne 1 ]; then
