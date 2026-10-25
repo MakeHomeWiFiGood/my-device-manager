@@ -41,7 +41,7 @@ jobs:
           echo '=== PACKAGE TREE ==='
           find "$APP" -type f -print | sort
           echo '=== RPCD BACKEND ==='
-          sed -n '1,500p' "$APP/root/usr/libexec/rpcd/luci.my_device_manager"
+          sed -n '450,1000p' "$APP/root/usr/libexec/rpcd/luci.my_device_manager"
           echo '=== UCI DEFAULTS ==='
           cat "$APP/root/etc/config/my_device_manager"
           echo '=== SOURCE FILE CONTENTS ==='
