@@ -2,12 +2,14 @@
 
 An early LuCI application for OpenWrt 25.12.x. Current scope: device discovery, a persistent MAC-keyed friendly-name registry, and integration with standard OpenWrt DHCP static reservations.
 
+Devices without a useful hostname get a local display label based on connection type and the last three bytes of the MAC address. These automatic labels exist only in the LuCI interface: they are not written to DHCP, UCI, or the device hostname. To send a name to DHCP, you must explicitly choose **Register** and confirm it in the form.
+
 ## Install from a script
 
 The project uses a direct installer, so building an APK with the OpenWrt SDK is not required. Run these commands in an SSH session as `root` on the router:
 
 ```sh
-wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.2/install.sh
+wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.3/install.sh
 sh /root/mdm-install.sh check
 sh /root/mdm-install.sh install
 ```
