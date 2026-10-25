@@ -586,7 +586,7 @@ MDM_UFP_HELPER
     }
 
     if (index($0, "preferred;") > 0 && index($0, "printf") > 0) {
-        $0 = "                printf \"%s|%s|%s|%s|%d|%d|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\\\n\", m, ip[m], host[m], iface[m], online[m]+0, registered[m]+0, name[m], band[m], down[m], up[m], dns[m], mode[m], preferred, ufp_vendor[tolower(m)], ufp_device[tolower(m)], ufp_device_name[tolower(m)];"
+        $0 = "                printf \"%s|%s|%s|%s|%d|%d|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\n\", m, ip[m], host[m], iface[m], online[m]+0, registered[m]+0, name[m], band[m], down[m], up[m], dns[m], mode[m], preferred, ufp_vendor[tolower(m)], ufp_device[tolower(m)], ufp_device_name[tolower(m)];"
     }
 
     if (index($0, "dns_name dhcp_mode discovered_name; do") > 0)
@@ -612,6 +612,9 @@ MDM_UFP_PATCH
             die "Не удалось сопоставить отпечаток UFP по MAC."
         grep -Fq 'json_add_string fingerprint_device "$fingerprint_device"' "$tmp_dir/backend.ufp" ||
             die "Не удалось добавить модель UFP в RPC-ответ."
+        expected_ufp_printf='printf "%s|%s|%s|%s|%d|%d|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n", m, ip[m]'
+        grep -Fq "$expected_ufp_printf" "$tmp_dir/backend.ufp" ||
+            die "Проверка разделителя строк UFP не пройдена: каждая запись должна завершаться переводом строки."
         sh -n "$tmp_dir/backend.ufp" ||
             die "RPC-обработчик с UFP не прошёл проверку shell-синтаксиса."
         mv "$tmp_dir/backend.ufp" "$backend_file" ||
