@@ -92,9 +92,27 @@ download_source() {
     base64 -d "$tmp_dir/source.tar.gz.b64" > "$tmp_dir/source.tar.gz" ||
         die "Не удалось декодировать архив исходников."
     gzip -t "$tmp_dir/source.tar.gz" || die "Архив исходников повреждён."
-    tar -xzf "$tmp_dir/source.tar.gz" --strip-components=1 -C "$tmp_dir/source"
 
-    package_dir="$tmp_dir/source/luci-app-my-device-manager"
+    # BusyBox tar on OpenWrt does not implement GNU tar's --strip-components.
+    # Validate archive paths, extract into a private temporary directory, then
+    # locate the expected application directory regardless of the archive prefix.
+    tar -tzf "$tmp_dir/source.tar.gz" > "$tmp_dir/archive.list" ||
+        die "Не удалось прочитать список файлов в архиве."
+    while IFS= read -r archive_entry; do
+        case "$archive_entry" in
+            /*|..|../*|*/../*|*/..)
+                die "Небезопасный путь в архиве: $archive_entry"
+                ;;
+        esac
+    done < "$tmp_dir/archive.list"
+
+    tar -xzf "$tmp_dir/source.tar.gz" -C "$tmp_dir/source" ||
+        die "Не удалось распаковать архив исходников."
+    find "$tmp_dir/source" -type d -name luci-app-my-device-manager -print > "$tmp_dir/package-dir.list"
+    [ -s "$tmp_dir/package-dir.list" ] || die "В архиве отсутствует каталог приложения."
+    [ "$(wc -l < "$tmp_dir/package-dir.list" | tr -d ' ')" = "1" ] ||
+        die "В архиве найдено несколько каталогов приложения; отказываюсь продолжать."
+    package_dir="$(cat "$tmp_dir/package-dir.list")"
 }
 
 validate_payload() {
