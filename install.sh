@@ -198,15 +198,15 @@ MDM_MAC_VALIDATION
         die "Не удалось подготовить тест общей проверки MAC-адреса."
     (
         . "$test_file"
-        mac_valid 'e8:88:43:6f:fb:e3' || exit 1
-        mac_valid 'E8:88:43:6F:FB:E3' || exit 1
-        mac_valid 'e8-88-43-6f-fb-e3' || exit 1
-        if mac_valid 'e8:88:43:6f:fb:eg'; then exit 1; fi
-        if mac_valid 'e8:88:43:6f:fb'; then exit 1; fi
+        mac_valid 'aa:bb:cc:dd:ee:ff' || exit 1
+        mac_valid 'AA:BB:CC:DD:EE:FF' || exit 1
+        mac_valid 'aa-bb-cc-dd-ee-ff' || exit 1
+        if mac_valid 'aa:bb:cc:dd:ee:gg'; then exit 1; fi
+        if mac_valid 'aa:bb:cc:dd:ee'; then exit 1; fi
         if mac_valid ''; then exit 1; fi
     ) || die "Проверка MAC-адреса не прошла тесты валидного и невалидного ввода."
 
-    log "Проверка MAC-адреса прошла тесты формата Poco X5 Pro и некорректного ввода."
+    log "Проверка MAC-адреса прошла тесты стандартного формата и некорректного ввода."
 }
 
 
