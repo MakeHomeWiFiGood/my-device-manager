@@ -7,11 +7,11 @@ An early LuCI package for OpenWrt 25.12.x. Current scope: device discovery, a pe
 This project now provides a direct installer, so building an APK with the OpenWrt SDK is not required. Run the following commands in an SSH session as `root` on the router:
 
 ```sh
-wget -O /tmp/mdm-install.sh https://raw.githubusercontent.com/MakeHomeWiFiGood/my-device-manager/main/install.sh
+wget -O /tmp/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/latest/download/install.sh
 sh /tmp/mdm-install.sh install
 ```
 
-The installer downloads the source bundle over HTTPS, checks the archive structure, backs up files it replaces, preserves an existing `/etc/config/my_device_manager`, and restarts `rpcd`. It requires LuCI and access to `raw.githubusercontent.com`.
+To check download access and the source archive without installing anything, run \`sh /tmp/mdm-install.sh check\`. The installer downloads the source bundle over HTTPS, checks the archive structure, backs up files it replaces, preserves an existing `/etc/config/my_device_manager`, and restarts `rpcd`. It requires LuCI and access to `raw.githubusercontent.com`.
 
 To remove the app and restore files that existed before installation, run:
 
