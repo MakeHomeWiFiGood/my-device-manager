@@ -44,10 +44,10 @@ jobs:
           cp install.sh artifacts/install.sh
           sha256sum artifacts/install.sh > artifacts/install.sh.sha256
           cat > artifacts/INSTALL.txt <<'EOF'
-          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.11)
+          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.12)
           
           Run as root:
-            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.11/install.sh
+            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.12/install.sh
             sh /root/mdm-install.sh install
           
           To remove the installed app and restore files backed up by the installer:
@@ -67,13 +67,13 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish v0.2.11 UFP key normalization fix
+      - name: Publish v0.2.12 UFP key normalization fix
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.2.11
+          tag_name: v0.2.12
           target_commitish: ${{ github.sha }}
-          name: My Device Manager v0.2.11 — fix UFP MAC key parsing
+          name: My Device Manager v0.2.12 — fix UFP MAC key parsing
           overwrite_files: true
           generate_release_notes: true
           files: artifacts/*
@@ -90,7 +90,11 @@ jobs:
             real advertised name. Fixes an incorrectly escaped newline in the UFP record formatter and a
             jshn key-normalization bug: MAC keys returned by json_get_keys use
             underscores, so the helper now selects using that key and restores
-            colon-separated MACs for matching. CI validates these paths. UFP remains optional and is not installed or
+            colon-separated MACs for matching. It also adds optional read-only
+            hostapd station telemetry: Wi-Fi standard, channel, signal, RX/TX
+            link rates and current session byte counters. It does not change
+            wireless configuration or restart radio services. CI validates the
+            installer and generated patch paths. UFP remains optional and is not installed or
             configured by this installer. Static DHCP labels cannot overwrite
             a live device hostname. Unknown clients show
             "Неизвестное устройство" instead of a generated Wi-Fi-band/MAC label.
