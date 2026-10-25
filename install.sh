@@ -1597,8 +1597,10 @@ apply_two_level_registration_patch() {
 }
 END { if (!added) exit 1 }
 MDM_LOCAL_REGISTER
-        awk -f "$local_patch" "$backend_file" > "$tmp_dir/backend.local-register" ||
-            die "Не удалось отделить регистрацию в приложении от DHCP. Контекст: $(grep -n -A18 -B5 -E \"register|read_arg ip|register_device\" \"$backend_file\" | head -n 100 | tr \"\\n\" \"|\")"
+        if ! awk -f "$local_patch" "$backend_file" > "$tmp_dir/backend.local-register"; then
+            grep -n -E 'register|read_arg ip|register_device' "$backend_file" | head -n 100 >&2 || true
+            die "Не удалось отделить регистрацию в приложении от DHCP."
+        fi
         grep -Fq '# MDM_TWO_LEVEL_LOCAL_REGISTER' "$tmp_dir/backend.local-register" ||
             die "Обычная регистрация всё ещё может передавать IP в DHCP."
         sh -n "$tmp_dir/backend.local-register" ||
