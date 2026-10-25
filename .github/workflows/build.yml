@@ -40,6 +40,10 @@ jobs:
           APP="$RUNNER_TEMP/mdm-source/luci-app-my-device-manager"
           echo '=== PACKAGE TREE ==='
           find "$APP" -type f -print | sort
+          echo '=== RPCD BACKEND ==='
+          sed -n '1,500p' "$APP/root/usr/libexec/rpcd/luci.my_device_manager"
+          echo '=== UCI DEFAULTS ==='
+          cat "$APP/root/etc/config/my_device_manager"
           echo '=== SOURCE FILE CONTENTS ==='
           find "$APP" -type f \( -name '*.lua' -o -name '*.uc' -o -name '*.ucode' -o -name '*.js' -o -name '*.json' -o -name '*.htm' -o -name '*.html' -o -name '*.sh' -o -name '*.css' \) -print0 |
             while IFS= read -r -d '' file; do
