@@ -1466,7 +1466,7 @@ MDM_BAND_SCHEMA
         if (at > 0) $0 = substr($0, 1, at - 1) new substr($0, at + length(old))
     }
 
-    if ($0 == "\t\tvar actions = [registerButton];" && !select_added) {
+    if (index($0, "var actions = [registerButton];") > 0 && !select_added) {
         print
         print "\t\t\tif (d.registered) {"
         print "\t\t\t\tvar savedBandMode = d.band_mode || 'auto';"
@@ -1527,6 +1527,10 @@ MDM_BAND_UI
             die "Не удалось добавить пометку для незарегистрированных устройств."
         grep -Fq 'mdm-band-select' "$tmp_dir/main.band.js" ||
             die "Не удалось добавить селектор диапазона Wi-Fi."
+        grep -Fq 'actions.push(bandSelect);' "$tmp_dir/main.band.js" ||
+            die "Не удалось подключить селектор диапазона Wi-Fi к действиям устройства."
+        grep -Fq 'Только 2,4 ГГц' "$tmp_dir/main.band.js" ||
+            die "В селекторе отсутствует режим только 2,4 ГГц."
         grep -Fq 'wifi_band_pair_not_found:' "$tmp_dir/main.band.js" ||
             die "Не добавлена ошибка проверки совместимости Wi-Fi."
         if command -v node >/dev/null 2>&1; then
