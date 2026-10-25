@@ -95,7 +95,7 @@ do_install() {
     base64 -d "$tmp_dir/source.tar.gz.b64" > "$tmp_dir/source.tar.gz" ||
         die "Не удалось декодировать архив исходников."
     gzip -t "$tmp_dir/source.tar.gz" || die "Архив исходников повреждён."
-    tar -xzf "$tmp_dir/source.tar.gz" -C "$tmp_dir/source"
+    tar -xzf "$tmp_dir/source.tar.gz" --strip-components=1 -C "$tmp_dir/source"
 
     package_dir="$tmp_dir/source/luci-app-my-device-manager"
     [ -d "$package_dir" ] || die "В архиве отсутствует каталог приложения."
@@ -139,6 +139,13 @@ do_uninstall() {
     if [ -f "$STATE_DIR/new-files" ]; then
         while IFS= read -r target_file; do
             [ -n "$target_file" ] || continue
+            # The app's UCI config may contain user edits; keep it on uninstall.
+            case "$target_file" in
+                /etc/config/my_device_manager)
+                    log "Оставляю пользовательскую конфигурацию: $target_file"
+                    continue
+                    ;;
+            esac
             rm -f "$target_file"
         done < "$STATE_DIR/new-files"
     fi
