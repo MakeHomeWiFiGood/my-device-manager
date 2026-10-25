@@ -1389,7 +1389,8 @@ MDM_BAND_SCHEMA
         index($0, "mdm-unregistered") == 0) {
         old = "E('td', {}, E('span', { 'class': statusClass }, status)),"
         new = "E('td', {}, [E('span', { 'class': statusClass }, status), !d.registered ? E('div', { 'class': 'mdm-unregistered' }, 'Устройство не зарегистрировано') : '']),"
-        sub(old, new)
+        at = index($0, old)
+        if (at > 0) $0 = substr($0, 1, at - 1) new substr($0, at + length(old))
     }
 
     if ($0 == "\t\tvar actions = [registerButton];" && !select_added) {
