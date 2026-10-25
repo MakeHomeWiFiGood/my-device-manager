@@ -44,10 +44,10 @@ jobs:
           cp install.sh artifacts/install.sh
           sha256sum artifacts/install.sh > artifacts/install.sh.sha256
           cat > artifacts/INSTALL.txt <<'EOF'
-          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.6)
+          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.7)
           
           Run as root:
-            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.6/install.sh
+            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.7/install.sh
             sh /root/mdm-install.sh install
           
           To remove the installed app and restore files backed up by the installer:
@@ -67,13 +67,13 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish RPC permission fix and DHCP/mDNS device-name discovery
+      - name: Publish RPC permission and mDNS parser fixes
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.2.6
+          tag_name: v0.2.7
           target_commitish: ${{ github.sha }}
-          name: My Device Manager v0.2.6 — fix RPC handler permissions and discover names
+          name: My Device Manager v0.2.7 — fix mDNS parsing and RPC permissions
           overwrite_files: true
           generate_release_notes: true
           files: artifacts/*
@@ -83,7 +83,8 @@ jobs:
             The installer now explicitly chmods and validates the handler.
             Also adds read-only mDNS discovery: Google Cast friendly names and
             Android TV Remote labels are matched by IPv4 address, followed by
-            mDNS hostnames and DHCP hostnames. Static DHCP labels cannot
+            mDNS hostnames and DHCP hostnames. The service parser handles
+            different JSON indentation styles. Static DHCP labels cannot
             overwrite a live device hostname. Unknown clients show
             "Неизвестное устройство" instead of a generated Wi-Fi-band/MAC label.
             No device hostname, DHCP, UCI, firewall, mwan3, Tachyon, or proxy
