@@ -33,24 +33,6 @@ jobs:
           test -f "$RUNNER_TEMP/mdm-source/luci-app-my-device-manager/root/usr/share/luci/menu.d/luci-app-my-device-manager.json"
           test -f "$RUNNER_TEMP/mdm-source/luci-app-my-device-manager/root/usr/share/rpcd/acl.d/luci-app-my-device-manager.json"
 
-      - name: Inspect LuCI app source for reported device names
-        shell: bash
-        run: |
-          set -euo pipefail
-          APP="$RUNNER_TEMP/mdm-source/luci-app-my-device-manager"
-          echo '=== PACKAGE TREE ==='
-          find "$APP" -type f -print | sort
-          echo '=== RPCD BACKEND ==='
-          sed -n '450,1000p' "$APP/root/usr/libexec/rpcd/luci.my_device_manager"
-          echo '=== UCI DEFAULTS ==='
-          cat "$APP/root/etc/config/my_device_manager"
-          echo '=== SOURCE FILE CONTENTS ==='
-          find "$APP" -type f \( -name '*.lua' -o -name '*.uc' -o -name '*.ucode' -o -name '*.js' -o -name '*.json' -o -name '*.htm' -o -name '*.html' -o -name '*.sh' -o -name '*.css' \) -print0 |
-            while IFS= read -r -d '' file; do
-              echo "===== $file ====="
-              sed -n '1,260p' "$file"
-            done
-
       - name: Validate installer and prepare download artifact
         shell: bash
         run: |
@@ -62,10 +44,10 @@ jobs:
           cp install.sh artifacts/install.sh
           sha256sum artifacts/install.sh > artifacts/install.sh.sha256
           cat > artifacts/INSTALL.txt <<'EOF'
-          My Device Manager — direct installer for OpenWrt 25.12.x
+          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.4)
           
           Run as root:
-            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.3/install.sh
+            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.4/install.sh
             sh /root/mdm-install.sh install
           
           To remove the installed app and restore files backed up by the installer:
@@ -85,3 +67,22 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Publish hostname precedence fix
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.2.4
+          target_commitish: ${{ github.sha }}
+          name: My Device Manager v0.2.4 — prefer device-reported hostname
+          overwrite_files: true
+          generate_release_notes: true
+          files: artifacts/*
+          body: |
+            Fixes name selection for clients that provide a hostname via DHCP:
+            the hostname from the current DHCP lease now takes precedence over
+            the static DHCP reservation name. The generated display fallback is
+            used only when no useful name is reported. No hostname or DHCP/UCI
+            setting is written automatically by this change.
+            The installer adjusts the RPCD source in its private extraction
+            directory and includes a check that validates the patch. Still an
+            early scaffold; the change has not been live-tested on a router.
