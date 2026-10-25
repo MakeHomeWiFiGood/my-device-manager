@@ -515,7 +515,7 @@ apply_ufp_fingerprint_patch() {
         backend_patch="$tmp_dir/ufp-backend.awk"
         cat > "$ufp_helper" <<'MDM_UFP_HELPER'
 append_ufp_records() {
-    local output_file="$1" fingerprint_json fingerprint_keys fingerprint_mac fingerprint_vendor fingerprint_device fingerprint_device_name
+    local output_file="$1" fingerprint_json fingerprint_keys fingerprint_key fingerprint_mac fingerprint_vendor fingerprint_device fingerprint_device_name
 
     [ -n "$output_file" ] || return 0
     command -v ubus >/dev/null 2>&1 || return 0
@@ -528,16 +528,22 @@ append_ufp_records() {
     json_load "$fingerprint_json" 2>/dev/null || return 0
     json_get_keys fingerprint_keys
 
-    for fingerprint_mac in $fingerprint_keys; do
-        case "$fingerprint_mac" in
-            [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]) ;;
+    # jshn replaces punctuation in JSON object keys with underscores
+    # when json_get_keys is used. Select using that normalized key, while
+    # restoring the canonical colon-separated MAC for cross-source matching.
+    for fingerprint_key in $fingerprint_keys; do
+        case "$fingerprint_key" in
+            [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F])
+                fingerprint_mac="$fingerprint_key" ;;
+            [0-9a-fA-F][0-9a-fA-F]_[0-9a-fA-F][0-9a-fA-F]_[0-9a-fA-F][0-9a-fA-F]_[0-9a-fA-F][0-9a-fA-F]_[0-9a-fA-F][0-9a-fA-F]_[0-9a-fA-F][0-9a-fA-F])
+                fingerprint_mac=$(printf '%s' "$fingerprint_key" | tr '_' ':') ;;
             *) continue ;;
         esac
 
         fingerprint_vendor=""
         fingerprint_device=""
         fingerprint_device_name=""
-        json_select "$fingerprint_mac" 2>/dev/null || continue
+        json_select "$fingerprint_key" 2>/dev/null || continue
         json_get_var fingerprint_vendor vendor
         json_get_var fingerprint_device device
         json_get_var fingerprint_device_name device_name
@@ -610,6 +616,12 @@ MDM_UFP_PATCH
             die "Не удалось подключить UFP к списку устройств."
         grep -Fq 'ufp_device[tolower(m)]' "$tmp_dir/backend.ufp" ||
             die "Не удалось сопоставить отпечаток UFP по MAC."
+        grep -Fq 'for fingerprint_key in $fingerprint_keys; do' "$ufp_helper" ||
+            die "Не удалось обойти нормализованные jshn-ключи UFP."
+        grep -Fq 'json_select "$fingerprint_key" 2>/dev/null || continue' "$ufp_helper" ||
+            die "Не удалось выбрать запись UFP по нормализованному ключу."
+        grep -Fq "tr '_' ':'" "$ufp_helper" ||
+            die "Не удалось восстановить MAC-адрес из ключа UFP."
         grep -Fq 'json_add_string fingerprint_device "$fingerprint_device"' "$tmp_dir/backend.ufp" ||
             die "Не удалось добавить модель UFP в RPC-ответ."
         expected_ufp_printf='printf "%s|%s|%s|%s|%d|%d|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n", m, ip[m]'
