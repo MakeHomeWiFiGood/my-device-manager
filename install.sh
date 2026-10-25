@@ -84,8 +84,8 @@ download_source() {
 
     log "Загружаю исходные файлы..."
     for part in 01 02 03 04 05 06 07 08 09; do
-        wget -q -O "$tmp_dir/bundle.part\${part}" "\${SOURCE_BASE}/source/bundle.part\${part}" ||
-            die "Не удалось загрузить исходник bundle.part\${part}. Проверь доступ к raw.githubusercontent.com."
+        wget -q -O "$tmp_dir/bundle.part${part}" "${SOURCE_BASE}/source/bundle.part${part}" ||
+            die "Не удалось загрузить исходник bundle.part${part}. Проверь доступ к raw.githubusercontent.com."
     done
 
     cat "$tmp_dir"/bundle.part* > "$tmp_dir/source.tar.gz.b64"
