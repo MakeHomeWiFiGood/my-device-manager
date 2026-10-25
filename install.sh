@@ -225,6 +225,12 @@ append_mdns_records() {
     # Prefer human-facing service labels over generic hostnames:
     # Google Cast fn=, Android TV Remote, AirPlay, and similar names.
     printf '%s\n' "$mdns_services_json" | awk '
+        function indent_level(line, prefix) {
+            prefix = line
+            sub(/[^ \t].*$/, "", prefix)
+            gsub(/\t/, "    ", prefix)
+            return length(prefix)
+        }
         function flush_record(    label, priority, n, i, address) {
             if (instance == "") return
             label = ""
@@ -248,24 +254,39 @@ append_mdns_records() {
                 }
             }
         }
-        BEGIN { service = ""; instance = ""; fn = ""; ips = ""; in_ipv4 = 0 }
+        BEGIN {
+            service = ""; instance = ""; fn = ""; ips = ""
+            in_ipv4 = 0; service_indent = -1; record_indent = -1
+        }
         {
-            if ($0 ~ /^        "_[^"]+\._tcp"[[:space:]]*:[[:space:]]*\{/) {
+            current_indent = indent_level($0)
+
+            # Do not assume a fixed number of spaces: ubus JSON indentation
+            # varies between builds and may use tabs.
+            if ($0 ~ /^[[:space:]]*"_([^"]+\._tcp)"[[:space:]]*:[[:space:]]*\{/) {
+                flush_record()
                 service = $0
-                sub(/^        "/, "", service)
-                sub(/".*/, "", service)
+                sub(/^[[:space:]]*"/, "", service)
+                sub(/".*$/, "", service)
+                instance = ""; fn = ""; ips = ""; in_ipv4 = 0
+                service_indent = current_indent
+                record_indent = -1
                 next
             }
-            if (service != "" && $0 ~ /^                ".*"[[:space:]]*:[[:space:]]*\{/) {
+
+            if (service != "" &&
+                $0 ~ /^[[:space:]]*"[^"]*"[[:space:]]*:[[:space:]]*\{[[:space:]]*$/ &&
+                current_indent > service_indent &&
+                (record_indent < 0 || current_indent == record_indent)) {
                 flush_record()
                 instance = $0
-                sub(/^                "/, "", instance)
+                sub(/^[[:space:]]*"/, "", instance)
                 sub(/"[[:space:]]*:[[:space:]]*\{[[:space:]]*$/, "", instance)
-                fn = ""
-                ips = ""
-                in_ipv4 = 0
+                if (record_indent < 0) record_indent = current_indent
+                fn = ""; ips = ""; in_ipv4 = 0
                 next
             }
+
             if (instance != "") {
                 if ($0 ~ /"fn=/) {
                     fn = $0
@@ -285,16 +306,19 @@ append_mdns_records() {
                         ips = ips (ips == "" ? "" : " ") address
                     }
                 }
-                if ($0 ~ /^                \}[,]?[[:space:]]*$/) {
+            }
+
+            if ($0 ~ /^[[:space:]]*\}[,]?[[:space:]]*$/) {
+                if (instance != "" && current_indent == record_indent) {
                     flush_record()
-                    instance = ""
-                    fn = ""
-                    ips = ""
-                    in_ipv4 = 0
-                    next
+                    instance = ""; fn = ""; ips = ""; in_ipv4 = 0
+                }
+                if (service != "" && current_indent == service_indent) {
+                    flush_record()
+                    service = ""; instance = ""; fn = ""; ips = ""
+                    in_ipv4 = 0; service_indent = -1; record_indent = -1
                 }
             }
-            if ($0 ~ /^        \}[,]?[[:space:]]*$/) service = ""
         }
         END { flush_record() }
     ' >> "$output_file"
