@@ -33,7 +33,7 @@ jobs:
           test -f "$RUNNER_TEMP/mdm-source/luci-app-my-device-manager/root/usr/share/luci/menu.d/luci-app-my-device-manager.json"
           test -f "$RUNNER_TEMP/mdm-source/luci-app-my-device-manager/root/usr/share/rpcd/acl.d/luci-app-my-device-manager.json"
 
-      - name: Validate installer and prepare release assets
+      - name: Validate installer and prepare download artifact
         shell: bash
         run: |
           set -euo pipefail
@@ -51,7 +51,7 @@ jobs:
             sh /tmp/mdm-install.sh install
           
           To remove the installed app and restore files backed up by the installer:
-            sh /root/mdm-install.sh uninstall
+            sh /tmp/mdm-install.sh uninstall
           
           Requires LuCI and access to raw.githubusercontent.com.
           This is an early scaffold. Wi-Fi band enforcement and per-device speed
