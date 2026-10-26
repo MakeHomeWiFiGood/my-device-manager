@@ -60,7 +60,7 @@ jobs:
             sh /root/mdm-install.sh uninstall
           
           Requires LuCI and access to raw.githubusercontent.com.
-          Registration is split into two steps: “Зарегистрировать” stores the client in My Device Manager only; “DHCP Регистрация” separately creates a checked static DHCP reservation. Per-device Wi-Fi band selection is supported for registered clients; changing restrictions may briefly reload Wi-Fi. Per-device speed enforcement is not implemented. The app does not change mwan3, Tachyon, proxy routing, or firewall policies.
+          Registration is split into two steps: “Зарегистрировать” stores the client in My Device Manager only; “Зарегистрировать DHCP-запись” separately creates a checked static DHCP reservation. Per-device Wi-Fi band selection is supported for registered clients; changing restrictions may briefly reload Wi-Fi. Per-device speed enforcement is not implemented. The app does not change mwan3, Tachyon, proxy routing, or firewall policies.
           EOF
 
       - name: Upload installer artifact
@@ -84,13 +84,10 @@ jobs:
           body: |
             Splits device registration into two independent operations: “Зарегистрировать”
             stores the device in My Device Manager only and does not edit DHCP, while
-            “DHCP Регистрация” separately validates the IPv4 address, refuses conflicts
+            “Зарегистрировать DHCP-запись” separately validates the IPv4 address, refuses conflicts
             with existing static DHCP reservations, and creates a normal OpenWrt DHCP host.
-            The first “Зарегистрировать” action now stores the client in the My Device Manager
-            registry without invoking the fragile MAC-format validator; MAC normalization
-            remains in place. The separate “DHCP Регистрация” action retains MAC/IP validation
-            and reservation conflict checks. Its button is shown only for registered devices
-            with an IP address and is omitted when a static reservation already exists.
+            The first “Зарегистрировать” action stores the client only in the My Device Manager registry, skips the strict format validator for this registry-only step, and normalizes common MAC notations before the record is written. The separate “Зарегистрировать DHCP-запись” action retains MAC/IP validation
+            and reservation conflict checks. Its button is shown only for registered devices with an IP address and is omitted when a static reservation already exists. MAC input accepts common colon/hyphen/dot, compact, upper/lowercase and surrounding-whitespace variants after normalization.
             Adds persistent per-device Wi-Fi band selection for registered devices:
             2.4 GHz only, 5 GHz only, or both bands without an MDM-created restriction
             (the client chooses its band). Unregistered clients are marked
