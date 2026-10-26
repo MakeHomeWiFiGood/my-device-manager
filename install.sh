@@ -2047,7 +2047,7 @@ apply_diagnostics_logging_patch() {
     [ -f "$js_file" ] || die "Не найден интерфейс для диагностического журнала."
     [ -f "$acl_file" ] || die "Не найден ACL rpcd для диагностического журнала."
 
-    # Log files are RAM-only. Logging is off by default and never captures Wi-Fi keys.
+    # Log files are RAM-only. Logging is on by default until explicitly disabled.
     if ! grep -Fq 'MDM_DIAGNOSTIC_LOG_HELPERS' "$backend_file"; then
         helper_file="$tmp_dir/diagnostic-log-helpers.sh"
         cat > "$helper_file" <<'MDM_DIAGNOSTIC_LOG_HELPERS'
@@ -2056,6 +2056,15 @@ MDM_LOG_ENABLE_FILE=/tmp/my-device-manager-logging.enabled
 MDM_LOG_FILE=/tmp/my-device-manager.log
 
 mdm_logging_enabled() {
+    # MDM_LOG_DEFAULT_ON
+    # A missing /tmp marker means the default state, so logging returns after reboot.
+    if [ ! -e "$MDM_LOG_ENABLE_FILE" ]; then
+        umask 077
+        printf '1\\n' > "$MDM_LOG_ENABLE_FILE" || return 1
+        : > "$MDM_LOG_FILE" 2>/dev/null || true
+        printf '[%s] diagnostic logging enabled by default\\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf 'unknown-time')" >> "$MDM_LOG_FILE" 2>/dev/null || true
+        chmod 600 "$MDM_LOG_ENABLE_FILE" "$MDM_LOG_FILE" 2>/dev/null || true
+    fi
     [ "$(cat "$MDM_LOG_ENABLE_FILE" 2>/dev/null)" = "1" ]
 }
 
@@ -2085,7 +2094,10 @@ mdm_logging_set() {
             ;;
         0)
             mdm_debug_log "diagnostic logging disabled"
-            rm -f "$MDM_LOG_ENABLE_FILE"
+            umask 077
+            printf '0\\n' > "$MDM_LOG_ENABLE_FILE" || return 1
+            chmod 600 "$MDM_LOG_ENABLE_FILE" 2>/dev/null || true
+            # MDM_LOG_EXPLICIT_OFF
             ;;
         *) return 1 ;;
     esac
@@ -2278,7 +2290,7 @@ MDM_DIAGNOSTIC_UI_DECLARATIONS
         cat > "$ui_panel" <<'MDM_DIAGNOSTIC_LOG_UI'
             E('div', { 'class': 'cbi-section', 'style': 'margin:12px 0;padding:10px' }, [
                 E('strong', {}, 'Диагностика регистрации'),
-                E('p', { 'style': 'margin:6px 0' }, 'Журнал выключен по умолчанию и хранится только в оперативной памяти. Пароли Wi-Fi и имена устройств не записываются. После включения повтори регистрацию; журнал можно прочитать по SSH командой: cat /tmp/my-device-manager.log.'),
+                E('p', { 'style': 'margin:6px 0' }, 'Режим отладки включён по умолчанию и хранится только в оперативной памяти. Пароли Wi-Fi и имена устройств не записываются. Повтори регистрацию, затем прочитай журнал по SSH: cat /tmp/my-device-manager.log. После явного отключения журнал останется выключенным до перезагрузки.'),
                 (function() {
                     var button = E('button', { 'class': 'cbi-button cbi-button-action' }, 'Загрузка состояния журнала…');
                     var busy = false;
@@ -2359,6 +2371,12 @@ MDM_DIAGNOSTIC_PANEL_PATCH
         die "ACL rpcd не разрешает переключение журнала."
     grep -Fq 'MDM_DIAGNOSTIC_LOG_UI' "$js_file" ||
         die "Переключатель логирования отсутствует в LuCI."
+    grep -Fq '# MDM_LOG_DEFAULT_ON' "$backend_file" ||
+        die "Диагностическое логирование не включается по умолчанию."
+    grep -Fq '# MDM_LOG_EXPLICIT_OFF' "$backend_file" ||
+        die "Явное отключение диагностического логирования не сохраняется."
+    grep -Fq 'Режим отладки включён по умолчанию' "$js_file" ||
+        die "Интерфейс не сообщает о включённом по умолчанию режиме отладки."
     sh -n "$backend_file" ||
         die "RPC-обработчик диагностического журнала не прошёл проверку shell-синтаксиса."
     chmod 0755 "$backend_file" ||
@@ -2392,6 +2410,8 @@ do_check() {
     apply_two_level_registration_patch
     apply_diagnostics_logging_patch
     validate_payload
+    grep -Fq '# MDM_DIAGNOSTIC_DEFAULT_ON' "$0" ||
+        die "Установщик не включает режим отладки при установке."
     grep -Fq 'clean_owned_app_files() {' "$0" ||
         die "В установщике отсутствует механизм полной переустановки."
     grep -Fq 'reinstall) REINSTALL_MODE=1; do_install ;;' "$0" ||
@@ -2514,6 +2534,14 @@ do_install() {
     install_tree "$package_dir/htdocs" /www
     install_tree "$package_dir/luasrc" /usr/lib/lua/luci
     install_tree "$package_dir/ucode" /usr/share/ucode/luci
+
+    # MDM_DIAGNOSTIC_DEFAULT_ON
+    umask 077
+    printf '1\\n' > /tmp/my-device-manager-logging.enabled ||
+        die "Не удалось включить режим отладки по умолчанию."
+    printf '[%s] diagnostic logging enabled by installer\\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf 'unknown-time')" > /tmp/my-device-manager.log ||
+        die "Не удалось создать журнал отладки."
+    chmod 600 /tmp/my-device-manager-logging.enabled /tmp/my-device-manager.log 2>/dev/null || true
 
     restart_services
     if [ "${REINSTALL_MODE:-0}" = "1" ]; then

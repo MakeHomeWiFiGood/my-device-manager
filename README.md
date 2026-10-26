@@ -16,13 +16,13 @@ For associated Wi-Fi clients, the app can display the radio/band, channel, signa
 
 ## Diagnostic logging for registration
 
-The page includes a **«Включить логирование»** toggle. Logging is off by default and is opt-in. Enable it, retry the device registration once, then read the RAM-only log over SSH:
+The page includes a logging toggle. Debug logging is enabled by default and stored only in RAM. Retry the device registration once, then read the log over SSH:
 
 ```sh
 cat /tmp/my-device-manager.log
 ```
 
-The log records the normalized MAC used by the registration RPC and backend error codes, which helps distinguish a request rejected by the browser from a backend validation or registry failure. It does not log device names, IP addresses or Wi-Fi passwords. The log is capped and rotated in RAM, is cleared when logging is enabled again, and disappears on reboot. Disable logging in the LuCI page after collecting the failure.
+The log records the normalized MAC used by the registration RPC and backend error codes, which helps distinguish a request rejected by the browser from a backend validation or registry failure. It does not log device names, IP addresses or Wi-Fi passwords. The log is capped and rotated in RAM and disappears on reboot. Use the LuCI toggle to explicitly disable logging; the default-on behavior returns after reboot.
 
 ## Per-device Wi-Fi band selection
 
@@ -41,7 +41,7 @@ Register the device's current Wi-Fi MAC address. If a client uses MAC randomizat
 Run these commands in an SSH session as `root` on the router:
 
 ```sh
-wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.23/install.sh
+wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.24/install.sh
 sh /root/mdm-install.sh check &&
 sh /root/mdm-install.sh reinstall
 ```
