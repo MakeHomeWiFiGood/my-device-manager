@@ -11,7 +11,7 @@ For associated Wi-Fi clients, the app can display the radio/band, channel, signa
 ## Two-level registration
 
 - **«Зарегистрировать»** adds the device to My Device Manager only. It does not create or modify a static DHCP lease; the app's device settings and Wi-Fi band selector become available immediately.
-- **«DHCP Регистрация»** is a separate action for an app-registered device with an IPv4 address when a static reservation is not detected. It validates the MAC and IP, refuses conflicts with existing static DHCP reservations, then creates a standard OpenWrt `dhcp host` entry and reloads dnsmasq. If applying the change fails, the previous DHCP configuration is restored where possible.
+- **«Зарегистрировать DHCP-запись»** is a separate action for an app-registered device with an IPv4 address when a static reservation is not detected. It validates the MAC and IP, refuses conflicts with existing static DHCP reservations, then creates a standard OpenWrt `dhcp host` entry and reloads dnsmasq. If applying the change fails, the previous DHCP configuration is restored where possible.
 - Local registration intentionally skips the strict MAC-format validator after normalizing letter case and common separators. For manual registration, enter the device's actual MAC because the registry and Wi-Fi controls use it as the key. The separate DHCP step still validates MAC and IPv4 and checks reservation conflicts. The **«DHCP Регистрация»** button appears only for registered devices with an IP and is hidden when a static DHCP reservation is already detected.
 
 ## Per-device Wi-Fi band selection
@@ -24,7 +24,7 @@ Registered devices have a selector with three modes:
 
 Applying a restriction updates the relevant `wireless` UCI settings and can briefly reload Wi-Fi, interrupting clients. Before applying a restriction, MDM checks that each denied-band AP has an AP on the permitted band with the same SSID, encryption mode and key, so the client has a compatible network to rejoin. If that check fails, or if the existing Wi-Fi ACL uses an allow-list or a conflicting dormant MAC list, the operation is refused instead of silently overwriting the policy. MDM tracks the entries and filter settings it creates; switching back to both bands, unregistering a device, or uninstalling the app removes only MDM-owned restrictions where they are still identifiable.
 
-Register the device's current Wi-Fi MAC address. If a client uses MAC randomization and changes its address, it may need to be registered again. The shared registration validator accepts standard colon- or hyphen-separated hexadecimal MAC addresses regardless of letter case. Band selection is a Wi-Fi admission restriction, not a guarantee that a client will prefer a particular band while both are enabled.
+Register the device's current Wi-Fi MAC address. If a client uses MAC randomization and changes its address, it may need to be registered again. Before registration, MAC input is normalized to a canonical lowercase colon-separated value; common colon, hyphen, dotted, compact, upper/lowercase and whitespace variants are accepted. Band selection is a Wi-Fi admission restriction, not a guarantee that a client will prefer a particular band while both are enabled.
 
 ## Install or update
 
