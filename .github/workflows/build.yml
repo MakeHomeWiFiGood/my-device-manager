@@ -39,12 +39,12 @@ jobs:
         run: |
           set -euo pipefail
           backend="$RUNNER_TEMP/mdm-source/luci-app-my-device-manager/root/usr/libexec/rpcd/luci.my_device_manager"
-          echo '=== Base read_arg/input handling ==='
-          grep -n -E 'input=|read input|read -r input|read_arg\(\)|name_required' "$backend" || true
-          echo '=== Base registration handler ==='
-          grep -n -A55 -B15 -E 'register\|rename\)' "$backend" || true
-          echo '=== Base RPC schema ==='
-          grep -n -A3 -B3 -E '"register"|"rename"' "$backend" || true
+          echo '=== Base argument parser ==='
+          sed -n '34,50p' "$backend"
+          echo '=== Base registration validation ==='
+          sed -n '255,290p' "$backend"
+          echo '=== Base RPC input handling ==='
+          sed -n '648,665p' "$backend"
 
       - name: Validate installer and prepare download artifact
         shell: bash
