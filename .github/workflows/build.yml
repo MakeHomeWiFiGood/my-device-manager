@@ -53,10 +53,10 @@ jobs:
           cp install.sh artifacts/install.sh
           sha256sum artifacts/install.sh > artifacts/install.sh.sha256
           cat > artifacts/INSTALL.txt <<'EOF'
-          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.25)
+          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.26)
           
           Run as root:
-            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.25/install.sh
+            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.26/install.sh
             sh /root/mdm-install.sh check
             sh /root/mdm-install.sh reinstall
           
@@ -75,17 +75,18 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish My Device Manager v0.2.25 — fix RPC argument parsing and device controls
+      - name: Publish My Device Manager v0.2.26 — fix strict-shell RPC argument parsing
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.2.25
+          tag_name: v0.2.26
           target_commitish: ${{ github.sha }}
-          name: My Device Manager v0.2.25 — fix RPC argument parsing and device controls
+          name: My Device Manager v0.2.26 — fix strict-shell RPC argument parsing
           overwrite_files: true
           generate_release_notes: true
           files: artifacts/*
           body: |
+            Fixes the v0.2.25 pre-install check on OpenWrt when strict shell mode is enabled: RPC argument parsing now passes an explicit empty default to jshn's `json_get_var`, whose implementation otherwise may reference an unset third argument. The regression check exercises the installed OpenWrt jshn library on the router and retains a synthetic parser fixture for CI.
             Fixes registration failing with “Некорректный MAC-адрес”: the registry-only path now installs its validation bypass immediately after reading the MAC and before any strict MAC checks can run. It still canonicalizes input first and does not relax validation for the separate DHCP-registration action.
             Adds a CI assertion that the registration bypass precedes any strict MAC validation call.
             Fixes BusyBox MAC normalization: whitespace is removed with `sed` rather than `tr -d '[:space:]'`,
