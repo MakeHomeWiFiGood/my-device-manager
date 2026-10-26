@@ -50,10 +50,10 @@ jobs:
           cp install.sh artifacts/install.sh
           sha256sum artifacts/install.sh > artifacts/install.sh.sha256
           cat > artifacts/INSTALL.txt <<'EOF'
-          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.19)
+          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.20)
           
           Run as root:
-            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.19/install.sh
+            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.20/install.sh
             sh /root/mdm-install.sh install
           
           To remove the installed app and restore files backed up by the installer:
@@ -71,17 +71,20 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish My Device Manager v0.2.19 — MAC normalization and registration fix
+      - name: Publish My Device Manager v0.2.20 — BusyBox MAC normalization fix
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.2.19
+          tag_name: v0.2.20
           target_commitish: ${{ github.sha }}
-          name: My Device Manager v0.2.19 — MAC normalization and registration fix
+          name: My Device Manager v0.2.20 — BusyBox MAC normalization fix
           overwrite_files: true
           generate_release_notes: true
           files: artifacts/*
           body: |
+            Fixes BusyBox MAC normalization: whitespace is removed with `sed` rather than `tr -d '[:space:]'`,
+            avoiding deletion of literal characters from MAC addresses on the router. Tests use a synthetic MAC fixture,
+            not a real device's address.
             Splits device registration into two independent operations: “Зарегистрировать”
             stores the device in My Device Manager only and does not edit DHCP, while
             “Зарегистрировать DHCP-запись” separately validates the IPv4 address, refuses conflicts
