@@ -2000,6 +2000,336 @@ MDM_DHCP_REGISTER_UI
 
 
 
+
+
+apply_registration_core_rewrite_patch() {
+    local backend_file helper_file insert_patch local_patch dhcp_dispatch dispatch_patch cleanup_patch
+
+    backend_file="$package_dir/root/usr/libexec/rpcd/luci.my_device_manager"
+    [ -f "$backend_file" ] || die "Не найден RPC-обработчик реестра устройств."
+
+    # Registry-only registration must never call the DHCP-mutating transaction.
+    if ! grep -Fq 'registry_write_local() {' "$backend_file"; then
+        helper_file="$tmp_dir/registry-local-helper.sh"
+        cat > "$helper_file" <<'MDM_LOCAL_REGISTRY_HELPER'
+registry_write_local() {
+    local mac name section old_mac old_mode host_section host_rc host_ip host_name mode
+    local tx_dir band down up original_name original_dns original_lease original_ip
+    mac=$(mac_normalize "$1")
+    name=$(name_clean "$2")
+
+    if ! mac_valid "$mac"; then emit_error 'invalid_mac'; return 1; fi
+    if [ -z "$(printf '%s' "$name" | tr -d ' ')" ]; then emit_error 'name_required'; return 1; fi
+    if [ "$(printf '%s' "$name" | wc -c | tr -d ' ')" -gt 160 ]; then emit_error 'name_too_long'; return 1; fi
+    if [ -n "$(uci changes dhcp 2>/dev/null)" ] || [ -n "$(uci changes "$PACKAGE" 2>/dev/null)" ]; then
+        emit_error 'pending_uci_changes'
+        return 1
+    fi
+    [ -f "/etc/config/$PACKAGE" ] || { emit_error 'backup_failed'; return 1; }
+
+    section=$(section_for_mac "$mac")
+    old_mac=$(uci -q get "$PACKAGE.$section.mac" 2>/dev/null || true)
+    old_mode=$(uci -q get "$PACKAGE.$section.dhcp_mode" 2>/dev/null || true)
+
+    host_section=""
+    if host_section=$(find_host_section_by_mac "$mac"); then
+        host_rc=0
+    else
+        host_rc=$?
+        host_section=""
+    fi
+    [ "$host_rc" -ne 2 ] || { emit_error 'multiple_dhcp_hosts_for_mac'; return 1; }
+
+    # If a static host already exists, record its state but do not edit it.
+    # A device can therefore remain DHCP-registered without duplicate entries.
+    host_ip=""
+    host_name=""
+    mode=""
+    if [ -n "$host_section" ]; then
+        host_ip=$(uci -q get "dhcp.$host_section.ip" 2>/dev/null || true)
+        host_name=$(uci -q get "dhcp.$host_section.name" 2>/dev/null || true)
+        if [ "$host_section" = "$(managed_dhcp_section_for_mac "$mac")" ]; then
+            mode="managed"
+        else
+            mode="adopted"
+        fi
+    fi
+
+    tx_dir=$(mktemp -d /tmp/mdm-registry-local.XXXXXX) || { emit_error 'tempfile_failed'; return 1; }
+    if ! cp -p "/etc/config/$PACKAGE" "$tx_dir/package"; then
+        rm -rf "$tx_dir"
+        emit_error 'backup_failed'
+        return 1
+    fi
+
+    if [ "$mode" = "adopted" ]; then
+        if [ "$old_mode" = "adopted" ]; then
+            original_name=$(uci -q get "$PACKAGE.$section.dhcp_original_name" 2>/dev/null || true)
+            original_dns=$(uci -q get "$PACKAGE.$section.dhcp_original_dns" 2>/dev/null || true)
+            original_lease=$(uci -q get "$PACKAGE.$section.dhcp_original_leasetime" 2>/dev/null || true)
+            original_ip=$(uci -q get "$PACKAGE.$section.dhcp_original_ip" 2>/dev/null || true)
+            [ -n "$original_name" ] || original_name="$MISSING"
+            [ -n "$original_dns" ] || original_dns="$MISSING"
+            [ -n "$original_lease" ] || original_lease="$MISSING"
+            [ -n "$original_ip" ] || original_ip="$MISSING"
+        else
+            original_name=$(uci_get_or_missing "dhcp.$host_section.name")
+            original_dns=$(uci_get_or_missing "dhcp.$host_section.dns")
+            original_lease=$(uci_get_or_missing "dhcp.$host_section.leasetime")
+            original_ip=$(uci_get_or_missing "dhcp.$host_section.ip")
+        fi
+    fi
+
+    if [ -z "$old_mac" ]; then
+        uci set "$PACKAGE.$section=device" >/dev/null 2>&1 || {
+            uci revert "$PACKAGE" >/dev/null 2>&1 || true
+            cp -p "$tx_dir/package" "/etc/config/$PACKAGE" 2>/dev/null || true
+            uci commit "$PACKAGE" >/dev/null 2>&1 || true
+            rm -rf "$tx_dir"
+            emit_error 'uci_set_failed'
+            return 1
+        }
+    fi
+
+    band=$(uci -q get "$PACKAGE.$section.band_mode" 2>/dev/null || true)
+    down=$(uci -q get "$PACKAGE.$section.speed_down_mbit" 2>/dev/null || true)
+    up=$(uci -q get "$PACKAGE.$section.speed_up_mbit" 2>/dev/null || true)
+    [ -n "$band" ] || band=auto
+    [ -n "$down" ] || down=0
+    [ -n "$up" ] || up=0
+
+    if ! uci set "$PACKAGE.$section.mac=$mac" ||
+       ! uci set "$PACKAGE.$section.name=$name" ||
+       ! uci set "$PACKAGE.$section.band_mode=$band" ||
+       ! uci set "$PACKAGE.$section.speed_down_mbit=$down" ||
+       ! uci set "$PACKAGE.$section.speed_up_mbit=$up"; then
+        uci revert "$PACKAGE" >/dev/null 2>&1 || true
+        cp -p "$tx_dir/package" "/etc/config/$PACKAGE" 2>/dev/null || true
+        uci commit "$PACKAGE" >/dev/null 2>&1 || true
+        rm -rf "$tx_dir"
+        emit_error 'uci_set_failed'
+        return 1
+    fi
+
+    if [ -n "$mode" ]; then
+        if ! uci set "$PACKAGE.$section.dhcp_mode=$mode" ||
+           ! uci set "$PACKAGE.$section.lease_ip=$host_ip" ||
+           ! uci set "$PACKAGE.$section.dns_name=$host_name"; then
+            uci revert "$PACKAGE" >/dev/null 2>&1 || true
+            cp -p "$tx_dir/package" "/etc/config/$PACKAGE" 2>/dev/null || true
+            uci commit "$PACKAGE" >/dev/null 2>&1 || true
+            rm -rf "$tx_dir"
+            emit_error 'uci_set_failed'
+            return 1
+        fi
+        if [ "$mode" = "adopted" ]; then
+            if ! uci set "$PACKAGE.$section.dhcp_original_name=$original_name" ||
+               ! uci set "$PACKAGE.$section.dhcp_original_dns=$original_dns" ||
+               ! uci set "$PACKAGE.$section.dhcp_original_leasetime=$original_lease" ||
+               ! uci set "$PACKAGE.$section.dhcp_original_ip=$original_ip"; then
+                uci revert "$PACKAGE" >/dev/null 2>&1 || true
+                cp -p "$tx_dir/package" "/etc/config/$PACKAGE" 2>/dev/null || true
+                uci commit "$PACKAGE" >/dev/null 2>&1 || true
+                rm -rf "$tx_dir"
+                emit_error 'uci_set_failed'
+                return 1
+            fi
+        else
+            uci -q delete "$PACKAGE.$section.dhcp_original_name" >/dev/null 2>&1 || true
+            uci -q delete "$PACKAGE.$section.dhcp_original_dns" >/dev/null 2>&1 || true
+            uci -q delete "$PACKAGE.$section.dhcp_original_leasetime" >/dev/null 2>&1 || true
+            uci -q delete "$PACKAGE.$section.dhcp_original_ip" >/dev/null 2>&1 || true
+        fi
+    else
+        uci -q delete "$PACKAGE.$section.dhcp_mode" >/dev/null 2>&1 || true
+        uci -q delete "$PACKAGE.$section.lease_ip" >/dev/null 2>&1 || true
+        uci -q delete "$PACKAGE.$section.dns_name" >/dev/null 2>&1 || true
+        uci -q delete "$PACKAGE.$section.dhcp_original_name" >/dev/null 2>&1 || true
+        uci -q delete "$PACKAGE.$section.dhcp_original_dns" >/dev/null 2>&1 || true
+        uci -q delete "$PACKAGE.$section.dhcp_original_leasetime" >/dev/null 2>&1 || true
+        uci -q delete "$PACKAGE.$section.dhcp_original_ip" >/dev/null 2>&1 || true
+    fi
+
+    if ! uci commit "$PACKAGE" >/dev/null 2>&1; then
+        uci revert "$PACKAGE" >/dev/null 2>&1 || true
+        cp -p "$tx_dir/package" "/etc/config/$PACKAGE" 2>/dev/null || true
+        uci commit "$PACKAGE" >/dev/null 2>&1 || true
+        rm -rf "$tx_dir"
+        emit_error 'commit_failed'
+        return 1
+    fi
+
+    rm -rf "$tx_dir"
+    printf '{"ok":true,"mac":"%s","mode":"local"}\n' "$mac"
+    return 0
+}
+MDM_LOCAL_REGISTRY_HELPER
+
+        awk -v helper_file="$helper_file" '
+            BEGIN {
+                while ((getline line < helper_file) > 0) helper[++count] = line
+                close(helper_file)
+            }
+            $0 == "list_devices() {" && !inserted {
+                for (i = 1; i <= count; i++) print helper[i]
+                inserted = 1
+            }
+            { print }
+            END { if (!inserted) exit 1 }
+        ' "$backend_file" > "$tmp_dir/backend.local-helper" ||
+            die "Не удалось добавить независимую регистрацию без DHCP."
+        grep -Fq 'registry_write_local() {' "$tmp_dir/backend.local-helper" ||
+            die "Функция локальной регистрации отсутствует."
+        sh -n "$tmp_dir/backend.local-helper" ||
+            die "Функция локальной регистрации не прошла проверку синтаксиса."
+        mv "$tmp_dir/backend.local-helper" "$backend_file" ||
+            die "Не удалось сохранить локальную регистрацию."
+    fi
+
+    # The register RPC routes an empty IP to the registry-only writer and a
+    # populated IP to the existing transactional DHCP writer.
+    if ! grep -Fq 'MDM_LOCAL_ONLY_ROUTING' "$backend_file"; then
+        local_patch="$tmp_dir/registry-local-routing.awk"
+        cat > "$local_patch" <<'MDM_LOCAL_ROUTING'
+{
+    if ($0 == "                    requested_ip=\"\"") {
+        next
+    }
+
+    if ($0 == "                if [ \"$method\" = \"register\" ]; then") {
+        print "                register_local_only=0"
+        print "                if [ \"$method\" = \"register\" ] && [ -z \"$requested_ip\" ]; then"
+        print "                    register_local_only=1"
+        print "                fi # MDM_LOCAL_ONLY_ROUTING"
+        next
+    }
+
+    if (index($0, "registry_write \"$mac\" \"$name\" \"$requested_ip\"") > 0) {
+        print "                        if [ \"$register_local_only\" = \"1\" ]; then"
+        print "                            registry_write_local \"$mac\" \"$name\""
+        print "                        else"
+        print "                            registry_write \"$mac\" \"$name\" \"$requested_ip\""
+        print "                        fi"
+        writer_added = 1
+        next
+    }
+    print
+}
+END { if (!writer_added) exit 1 }
+MDM_LOCAL_ROUTING
+
+        awk -f "$local_patch" "$backend_file" > "$tmp_dir/backend.local-routing" ||
+            die "Не удалось разделить регистрацию в MDM и DHCP."
+        grep -Fq 'registry_write_local "$mac" "$name"' "$tmp_dir/backend.local-routing" ||
+            die "Регистрация только в MDM не подключена."
+        grep -Fq 'registry_write "$mac" "$name" "$requested_ip"' "$tmp_dir/backend.local-routing" ||
+            die "Обычная DHCP-регистрация не подключена."
+        if grep -Fq 'requested_ip=""' "$tmp_dir/backend.local-routing"; then
+            die "Обнаружено принудительное обнуление IP в обработчике регистрации."
+        fi
+        sh -n "$tmp_dir/backend.local-routing" ||
+            die "Переработанный обработчик регистрации не прошёл проверку синтаксиса."
+        mv "$tmp_dir/backend.local-routing" "$backend_file" ||
+            die "Не удалось сохранить обработчик выбора регистрации."
+    fi
+
+    # Promotion from registry-only to MDM+DHCP reuses the existing transaction,
+    # so the DHCP settings and registry state stay consistent and rollback together.
+    if ! grep -Fq 'MDM_REGISTER_DHCP_PROMOTION' "$backend_file"; then
+        dhcp_dispatch="$tmp_dir/register-dhcp-dispatch.sh"
+        cat > "$dhcp_dispatch" <<'MDM_REGISTER_DHCP_DISPATCH'
+            register_dhcp)
+                mac=$(mac_normalize "$(read_arg mac)")
+                ip=$(read_arg ip)
+                name=$(read_arg name)
+                if ! lock_begin; then
+                    emit_error 'configuration_busy'
+                else
+                    section=$(section_for_mac "$mac")
+                    stored=$(uci -q get "$PACKAGE.$section.mac" 2>/dev/null || true)
+                    if ! mac_valid "$mac"; then
+                        emit_error 'invalid_mac'
+                    elif [ "$stored" != "$mac" ]; then
+                        emit_error 'device_not_registered'
+                    else
+                        [ -n "$name" ] || name=$(uci -q get "$PACKAGE.$section.name" 2>/dev/null || true)
+                        registry_write "$mac" "$name" "$ip"
+                    fi
+                    lock_end
+                fi
+                ;; # MDM_REGISTER_DHCP_PROMOTION
+MDM_REGISTER_DHCP_DISPATCH
+
+        dispatch_patch="$tmp_dir/register-dhcp-dispatch.awk"
+        cat > "$dispatch_patch" <<'MDM_REGISTER_DHCP_PATCH'
+BEGIN {
+    while ((getline line < dispatch_file) > 0)
+        replacement[++replacement_count] = line
+    close(dispatch_file)
+}
+$0 == "            register_dhcp)" {
+    for (i = 1; i <= replacement_count; i++) print replacement[i]
+    in_old_dispatch = 1
+    replaced = 1
+    next
+}
+in_old_dispatch {
+    if ($0 == "            ;;") {
+        in_old_dispatch = 0
+        next
+    }
+    next
+}
+{ print }
+END { if (!replaced) exit 1 }
+MDM_REGISTER_DHCP_PATCH
+
+        awk -v dispatch_file="$dhcp_dispatch" -f "$dispatch_patch" "$backend_file" > "$tmp_dir/backend.dhcp-promotion" ||
+            die "Не удалось переработать DHCP-регистрацию существующего устройства."
+        grep -Fq 'registry_write "$mac" "$name" "$ip"' "$tmp_dir/backend.dhcp-promotion" ||
+            die "DHCP-регистрация не использует общую транзакцию."
+        grep -Fq 'MDM_REGISTER_DHCP_PROMOTION' "$tmp_dir/backend.dhcp-promotion" ||
+            die "Маркер переработанной DHCP-регистрации отсутствует."
+        sh -n "$tmp_dir/backend.dhcp-promotion" ||
+            die "DHCP-регистрация не прошла проверку синтаксиса."
+        mv "$tmp_dir/backend.dhcp-promotion" "$backend_file" ||
+            die "Не удалось сохранить DHCP-регистрацию."
+    fi
+
+    # Drop the old duplicated DHCP writer; all DHCP promotion now uses registry_write.
+    if grep -Fq 'register_dhcp_locked() {' "$backend_file"; then
+        cleanup_patch="$tmp_dir/remove-legacy-dhcp-writer.awk"
+        cat > "$cleanup_patch" <<'MDM_REMOVE_LEGACY_DHCP_WRITER'
+/^register_dhcp_locked\(\) \{$/ { in_legacy=1; removed=1; next }
+in_legacy {
+    if ($0 == "}") { in_legacy=0; next }
+    next
+}
+{ print }
+END { if (!removed || in_legacy) exit 1 }
+MDM_REMOVE_LEGACY_DHCP_WRITER
+        awk -f "$cleanup_patch" "$backend_file" > "$tmp_dir/backend.no-legacy-dhcp" ||
+            die "Не удалось удалить старый обработчик DHCP-регистрации."
+        mv "$tmp_dir/backend.no-legacy-dhcp" "$backend_file" ||
+            die "Не удалось сохранить единый обработчик DHCP-регистрации."
+    fi
+
+    grep -Fq 'registry_write_local() {' "$backend_file" ||
+        die "Не найдена отдельная регистрация без DHCP."
+    grep -Fq 'MDM_LOCAL_ONLY_ROUTING' "$backend_file" ||
+        die "Выбор регистрации без DHCP не подключён."
+    grep -Fq 'MDM_REGISTER_DHCP_PROMOTION' "$backend_file" ||
+        die "Продвижение зарегистрированного устройства в DHCP не подключено."
+    if grep -Fq 'MDM_REGISTRY_SKIP_MAC_VALIDATOR' "$backend_file"; then
+        die "Обнаружен небезопасный обход проверки MAC-адреса."
+    fi
+    sh -n "$backend_file" ||
+        die "RPC-обработчик после переработки регистрации не прошёл проверку синтаксиса."
+    chmod 0755 "$backend_file" ||
+        die "Не удалось выставить исполняемые права RPC-обработчика."
+}
+
+
 apply_registration_choice_ui_patch() {
     local js_file helper_file ui_patch
 
@@ -2518,6 +2848,7 @@ do_check() {
     apply_wifi_client_stats_patch
     apply_band_selection_patch
     apply_two_level_registration_patch
+    apply_registration_core_rewrite_patch
     apply_registration_choice_ui_patch
     apply_diagnostics_logging_patch
     validate_payload
