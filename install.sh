@@ -2145,7 +2145,7 @@ MDM_DIAGNOSTIC_ERROR
         print "                    *) emit_error 'logging_value_invalid' ;;"
         print "                esac"
         print "                ;;"
-        print
+        print ""
     }
     print
 }
@@ -2216,7 +2216,7 @@ MDM_DIAGNOSTIC_ACL
         print "    method: 'set_logging',"
         print "    params: ['enabled']"
         print "});"
-        print
+        print ""
         added = 1
     }
     print
