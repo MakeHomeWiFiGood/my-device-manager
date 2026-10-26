@@ -2297,8 +2297,10 @@ MDM_DIAGNOSTIC_PANEL_PATCH
         grep -Fq 'MDM_DIAGNOSTIC_LOG_UI' "$tmp_dir/main.logging-panel.js" ||
             die "Переключатель логирования не обнаружен в интерфейсе."
         if command -v node >/dev/null 2>&1; then
-            node --check "$tmp_dir/main.logging-panel.js" ||
+            if ! node --check "$tmp_dir/main.logging-panel.js"; then
+                sed -n '35,105p' "$tmp_dir/main.logging-panel.js" >&2 || true
                 die "Интерфейс диагностического журнала не прошёл проверку JavaScript."
+            fi
         fi
         mv "$tmp_dir/main.logging-panel.js" "$js_file" ||
             die "Не удалось сохранить интерфейс диагностического журнала."
