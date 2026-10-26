@@ -2353,7 +2353,81 @@ do_check() {
     apply_two_level_registration_patch
     apply_diagnostics_logging_patch
     validate_payload
-    log "Проверка успешна: архив, DHCP/mDNS, UFP, статистика Wi-Fi, выбор диапазона, отметка незарегистрированных устройств и диагностический журнал корректны."
+    grep -Fq 'clean_owned_app_files() {' "$0" ||
+        die "В установщике отсутствует механизм полной переустановки."
+    grep -Fq 'reinstall) REINSTALL_MODE=1; do_install ;;' "$0" ||
+        die "Команда reinstall не подключена."
+    is_mdm_managed_file /usr/libexec/rpcd/luci.my_device_manager ||
+        die "Проверка списка файлов переустановки не пройдена."
+    if is_mdm_managed_file /etc/config/my_device_manager ||
+       is_mdm_managed_file /etc/config/wireless ||
+       is_mdm_managed_file /etc/config/dhcp ||
+       is_mdm_managed_file /etc/config/firewall; then
+        die "Проверка списка файлов переустановки включает пользовательскую конфигурацию."
+    fi
+    log "Проверка успешна: архив, регистрация MAC, DHCP/mDNS, UFP, статистика Wi-Fi, выбор диапазона, отметка незарегистрированных устройств, диагностика и полная переустановка корректны."
+}
+
+is_mdm_managed_file() {
+    case "$1" in
+        /usr/libexec/rpcd/luci.my_device_manager|\
+        /usr/share/rpcd/acl.d/luci-app-my-device-manager.json|\
+        /usr/share/luci/menu.d/luci-app-my-device-manager.json|\
+        /www/luci-static/resources/view/my-device-manager/*|\
+        /www/luci-static/resources/my-device-manager/*|\
+        /usr/lib/lua/luci/controller/my_device_manager.lua|\
+        /usr/lib/lua/luci/view/my_device_manager/*|\
+        /usr/share/ucode/luci/controller/my_device_manager.uc|\
+        /usr/share/ucode/luci/view/my_device_manager/*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+clean_owned_app_files() {
+    local list_file target_file backup_file removed=0
+
+    # Preflight all saved originals before removing anything. If an original
+    # backup is missing, abort cleanly rather than risking an irreversible wipe.
+    for list_file in "$STATE_DIR/original-files" "$STATE_DIR/new-files"; do
+        [ -f "$list_file" ] || continue
+        while IFS= read -r target_file; do
+            [ -n "$target_file" ] || continue
+            case "$target_file" in
+                /etc/config/my_device_manager) continue ;;
+            esac
+            is_mdm_managed_file "$target_file" || continue
+            if [ "$list_file" = "$STATE_DIR/original-files" ]; then
+                backup_file="${BACKUP_DIR}${target_file}"
+                if [ ! -e "$backup_file" ] && [ ! -L "$backup_file" ]; then
+                    die "Не найдена исходная резервная копия $backup_file; полная переустановка отменена без удаления файлов."
+                fi
+            fi
+        done < "$list_file"
+    done
+
+    # Remove only files recorded by this installer and only within the app's
+    # allowlist. Keep the registry config and all Wi-Fi/DHCP/routing config.
+    for list_file in "$STATE_DIR/original-files" "$STATE_DIR/new-files"; do
+        [ -f "$list_file" ] || continue
+        while IFS= read -r target_file; do
+            [ -n "$target_file" ] || continue
+            case "$target_file" in
+                /etc/config/my_device_manager) continue ;;
+            esac
+            is_mdm_managed_file "$target_file" || continue
+            if [ -e "$target_file" ] || [ -L "$target_file" ]; then
+                rm -f "$target_file" ||
+                    die "Не удалось удалить файл приложения перед переустановкой: $target_file"
+                removed=$((removed + 1))
+            fi
+        done < "$list_file"
+    done
+
+    log "Перед переустановкой удалено файлов приложения: $removed"
 }
 
 do_install() {
@@ -2376,6 +2450,21 @@ do_install() {
     mkdir -p "$STATE_DIR"
     touch "$STATE_DIR/original-files" "$STATE_DIR/new-files"
 
+    if [ "${REINSTALL_MODE:-0}" = "1" ]; then
+        log "Полная переустановка: проверяю резервные копии и очищаю только файлы My Device Manager..."
+        is_mdm_managed_file /usr/libexec/rpcd/luci.my_device_manager ||
+            die "Внутренняя проверка списка файлов переустановки не пройдена."
+        is_mdm_managed_file /usr/share/rpcd/acl.d/luci-app-my-device-manager.json ||
+            die "Внутренняя проверка ACL-файла переустановки не пройдена."
+        if is_mdm_managed_file /etc/config/my_device_manager ||
+           is_mdm_managed_file /etc/config/wireless ||
+           is_mdm_managed_file /etc/config/dhcp ||
+           is_mdm_managed_file /etc/config/firewall; then
+            die "Проверка безопасности переустановки не прошла: конфигурация роутера не входит в список удаляемых файлов."
+        fi
+        clean_owned_app_files
+    fi
+
     log "Устанавливаю файлы LuCI..."
     install_tree "$package_dir/root" /
     # Be defensive: rpcd handlers must be executable regardless of archive mode.
@@ -2388,7 +2477,11 @@ do_install() {
     install_tree "$package_dir/ucode" /usr/share/ucode/luci
 
     restart_services
-    log "Установка завершена. Обнови страницу LuCI или выйди и войди снова."
+    if [ "${REINSTALL_MODE:-0}" = "1" ]; then
+        log "Полная переустановка завершена. Реестр устройств и настройки сети сохранены."
+    else
+        log "Установка/обновление завершено. Обнови страницу LuCI или выйди и войди снова."
+    fi
     log "Для удаления и восстановления прежних файлов выполни: sh $0 uninstall"
 }
 do_uninstall() {
@@ -2443,11 +2536,12 @@ do_uninstall() {
 }
 
 case "${1:-install}" in
-    install) do_install ;;
+    install) REINSTALL_MODE=0; do_install ;;
+    reinstall) REINSTALL_MODE=1; do_install ;;
     check|verify) do_check ;;
     uninstall|remove) do_uninstall ;;
     -h|--help|help)
-        printf 'Usage: sh install.sh [install|uninstall|check]\n'
+        printf 'Usage: sh install.sh [install|reinstall|uninstall|check]\n'
         ;;
-    *) die "Неизвестная команда: $1 (используй install или uninstall)." ;;
+    *) die "Неизвестная команда: $1 (используй install, reinstall, uninstall или check)." ;;
 esac

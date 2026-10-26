@@ -36,15 +36,17 @@ Applying a restriction updates the relevant `wireless` UCI settings and can brie
 
 Register the device's current Wi-Fi MAC address. If a client uses MAC randomization and changes its address, it may need to be registered again. Before registration, MAC input is normalized to a canonical lowercase colon-separated value; common colon, hyphen, dotted, compact, upper/lowercase and whitespace variants are accepted. The installer force-replaces older normalizer implementations and reports the exact failed normalization test if validation fails. Band selection is a Wi-Fi admission restriction, not a guarantee that a client will prefer a particular band while both are enabled.
 
-## Install or update
+## Full reinstall or update
 
 Run these commands in an SSH session as `root` on the router:
 
 ```sh
-wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.21/install.sh
-sh /root/mdm-install.sh check
-sh /root/mdm-install.sh install
+wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.22/install.sh
+sh /root/mdm-install.sh check &&
+sh /root/mdm-install.sh reinstall
 ```
+
+The `reinstall` command removes the previously installed, installer-tracked application files from the My Device Manager paths, then installs a freshly generated set. It checks stored original-file backups before deleting anything. The device registry in `/etc/config/my_device_manager`, saved backup manifests, existing Wi-Fi ACL restrictions applied to registered devices, and all other router network configuration are preserved. This does not trigger a Wi-Fi reload; applying a new band restriction from the LuCI UI may reload Wi-Fi and is a separate operation.
 
 The installer supports BusyBox `tar` on OpenWrt. It validates the source archive, patches the RPC backend and LuCI view for mDNS discovery, optional UFP fingerprints, Wi-Fi telemetry, band selection and the unregistered-device marker; explicitly sets executable permissions on the RPC handler; and backs up files it replaces. An existing `/etc/config/my_device_manager` is preserved. mDNS is optional and the installer does not install or enable it. UFP is also optional and is not installed by this app installer. Access to `raw.githubusercontent.com` is required.
 
