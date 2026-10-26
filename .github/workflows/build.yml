@@ -53,10 +53,10 @@ jobs:
           cp install.sh artifacts/install.sh
           sha256sum artifacts/install.sh > artifacts/install.sh.sha256
           cat > artifacts/INSTALL.txt <<'EOF'
-          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.22)
+          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.23)
           
           Run as root:
-            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.22/install.sh
+            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.23/install.sh
             sh /root/mdm-install.sh check
             sh /root/mdm-install.sh reinstall
           
@@ -75,17 +75,19 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish My Device Manager v0.2.22 — safe full reinstall and device controls
+      - name: Publish My Device Manager v0.2.23 — safe full reinstall and device controls
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.2.22
+          tag_name: v0.2.23
           target_commitish: ${{ github.sha }}
-          name: My Device Manager v0.2.22 — safe full reinstall and device controls
+          name: My Device Manager v0.2.23 — safe full reinstall and device controls
           overwrite_files: true
           generate_release_notes: true
           files: artifacts/*
           body: |
+            Fixes registration failing with “Некорректный MAC-адрес”: the registry-only path now installs its validation bypass immediately after reading the MAC and before any strict MAC checks can run. It still canonicalizes input first and does not relax validation for the separate DHCP-registration action.
+            Adds a CI assertion that the registration bypass precedes any strict MAC validation call.
             Fixes BusyBox MAC normalization: whitespace is removed with `sed` rather than `tr -d '[:space:]'`,
             avoiding deletion of literal characters from MAC addresses on the router. Tests use a synthetic MAC fixture,
             not a real device's address.
