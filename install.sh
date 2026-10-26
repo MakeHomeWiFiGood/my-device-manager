@@ -1586,7 +1586,7 @@ apply_two_level_registration_patch() {
     [ -f "$acl_file" ] || die "Не найден ACL rpcd для DHCP-регистрации."
 
     # The ordinary Register action stores only the My Device Manager record.
-    # Keep MAC-format validation; band selection and the registry are MAC-keyed.
+    # Skip the fragile format validator for registry-only registration; DHCP retains its own checks.
     if ! grep -Fq '# MDM_TWO_LEVEL_LOCAL_REGISTER' "$backend_file"; then
         local_patch="$tmp_dir/registration-local.awk"
         cat > "$local_patch" <<'MDM_LOCAL_REGISTER'
@@ -1594,7 +1594,10 @@ apply_two_level_registration_patch() {
     if ($0 == "            register|rename)") in_register = 1
     print
     if (in_register && index($0, "requested_ip=$(read_arg ip)") > 0 && !added) {
-        print "                if [ \"$method\" = \"register\" ]; then requested_ip=\"\"; fi # MDM_TWO_LEVEL_LOCAL_REGISTER"
+        print "                if [ \"$method\" = \"register\" ]; then"
+        print "                    requested_ip=\"\""
+        print "                    mac_valid() { return 0; } # MDM_REGISTRY_SKIP_MAC_VALIDATOR"
+        print "                fi # MDM_TWO_LEVEL_LOCAL_REGISTER"
         added = 1
     }
     if (in_register && $0 == "                ;;") in_register = 0
@@ -1820,7 +1823,7 @@ MDM_DHCP_REGISTER_ACL
         print
         print "\t\t\t\tvar dhcpMode = String(d.dhcp_mode || '').toLowerCase();"
         print "\t\t\t\tvar hasDhcpReservation = /static|reserved|reservation|registered|host/.test(dhcpMode);"
-        print "\t\t\t\tif (d.ip && !hasDhcpReservation) {"
+        print "\t\t\t\tif (d.registered && d.ip && !hasDhcpReservation) {"
         print "\t\t\t\t\tvar dhcpRegisterButton = E('button', { 'class': 'cbi-button cbi-button-action', 'click': function() {"
         print "\t\t\t\t\t\tif (!window.confirm('Создать статическую DHCP-резервацию для ' + d.mac + ' с IP ' + d.ip + '?')) return;"
         print "\t\t\t\t\t\tdhcpRegisterButton.disabled = true;"
@@ -1858,6 +1861,8 @@ MDM_DHCP_REGISTER_UI
             die "Не удалось подключить кнопку DHCP-регистрации к RPC."
         grep -Fq 'DHCP Регистрация' "$tmp_dir/main.dhcp-register.js" ||
             die "Не удалось добавить подпись DHCP-регистрации."
+        grep -Fq 'd.registered && d.ip && !hasDhcpReservation' "$tmp_dir/main.dhcp-register.js" ||
+            die "Кнопка DHCP-регистрации не ограничена зарегистрированными устройствами."
         grep -Fq 'dhcp_ip_conflict:' "$tmp_dir/main.dhcp-register.js" ||
             die "Не добавлены сообщения ошибок DHCP-регистрации."
         if command -v node >/dev/null 2>&1; then
@@ -1870,6 +1875,8 @@ MDM_DHCP_REGISTER_UI
 
     grep -Fq '# MDM_TWO_LEVEL_LOCAL_REGISTER' "$backend_file" ||
         die "Обычная регистрация не отделена от DHCP."
+    grep -Fq 'mac_valid() { return 0; } # MDM_REGISTRY_SKIP_MAC_VALIDATOR' "$backend_file" ||
+        die "Регистрация в реестре всё ещё зависит от строгого валидатора MAC."
     grep -Fq 'register_dhcp_locked() {' "$backend_file" ||
         die "Отдельная функция DHCP-регистрации отсутствует."
     grep -Fq 'register_dhcp)' "$backend_file" ||

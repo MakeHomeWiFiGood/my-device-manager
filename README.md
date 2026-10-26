@@ -12,7 +12,7 @@ For associated Wi-Fi clients, the app can display the radio/band, channel, signa
 
 - **«Зарегистрировать»** adds the device to My Device Manager only. It does not create or modify a static DHCP lease; the app's device settings and Wi-Fi band selector become available immediately.
 - **«DHCP Регистрация»** is a separate action for an app-registered device with an IPv4 address when a static reservation is not detected. It validates the MAC and IP, refuses conflicts with existing static DHCP reservations, then creates a standard OpenWrt `dhcp host` entry and reloads dnsmasq. If applying the change fails, the previous DHCP configuration is restored where possible.
-- MAC validation remains enabled for local registration because the registry and band controls use MAC as the device key. The DHCP step adds IPv4 and reservation-conflict checks.
+- Local registration intentionally skips the strict MAC-format validator after normalizing letter case and common separators. For manual registration, enter the device's actual MAC because the registry and Wi-Fi controls use it as the key. The separate DHCP step still validates MAC and IPv4 and checks reservation conflicts. The **«DHCP Регистрация»** button appears only for registered devices with an IP and is hidden when a static DHCP reservation is already detected.
 
 ## Per-device Wi-Fi band selection
 
@@ -31,7 +31,7 @@ Register the device's current Wi-Fi MAC address. If a client uses MAC randomizat
 Run these commands in an SSH session as `root` on the router:
 
 ```sh
-wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.17/install.sh
+wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.18/install.sh
 sh /root/mdm-install.sh check
 sh /root/mdm-install.sh install
 ```
