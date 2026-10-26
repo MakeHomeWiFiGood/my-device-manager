@@ -317,6 +317,104 @@ MDM_LOCAL_REGISTER_MAC
     log "Нормализация MAC проверена: регистр букв, пробелы, дефисы, точки и компактный формат."
 }
 
+apply_rpc_arg_parser_patch() {
+    local backend_file patch_file test_file
+
+    backend_file="$package_dir/root/usr/libexec/rpcd/luci.my_device_manager"
+    [ -f "$backend_file" ] || die "Не найден RPC-обработчик для исправления чтения аргументов."
+
+    # jsonfilter is not required by the app and may be absent on minimal images.
+    # The same handler already loads OpenWrt's jshn library for JSON output.
+    if ! grep -Fq '# MDM_READ_ARG_JSHN_V1' "$backend_file"; then
+        [ "$(grep -Fc 'read_arg() {' "$backend_file" || true)" = "1" ] ||
+            die "Не удалось однозначно найти функцию чтения RPC-аргументов."
+
+        patch_file="$tmp_dir/rpc-read-arg.awk"
+        cat > "$patch_file" <<'MDM_RPC_ARG_PATCH'
+function print_read_arg() {
+    print "read_arg() {"
+    print "    # MDM_READ_ARG_JSHN_V1: read RPC fields through OpenWrt's bundled jshn."
+    print "    local arg value"
+    print "    arg=\"$1\""
+    print "    [ -n \"$input\" ] || return 0"
+    print "    json_load \"$input\" 2>/dev/null || return 0"
+    print "    json_get_var value \"$arg\""
+    print "    printf '%s' \"$value\""
+    print "}"
+}
+$0 == "read_arg() {" && !replaced {
+    print_read_arg()
+    in_function = 1
+    replaced = 1
+    next
+}
+in_function {
+    if ($0 ~ /^[[:space:]]*}[[:space:]]*$/) in_function = 0
+    next
+}
+{ print }
+END { if (!replaced || in_function) exit 1 }
+MDM_RPC_ARG_PATCH
+
+        awk -f "$patch_file" "$backend_file" > "$tmp_dir/backend.rpc-args" ||
+            die "Не удалось заменить функцию чтения RPC-аргументов."
+        grep -Fq '# MDM_READ_ARG_JSHN_V1' "$tmp_dir/backend.rpc-args" ||
+            die "Новая функция чтения RPC-аргументов не найдена."
+        sh -n "$tmp_dir/backend.rpc-args" ||
+            die "RPC-обработчик после замены чтения аргументов не прошёл проверку синтаксиса."
+        mv "$tmp_dir/backend.rpc-args" "$backend_file" ||
+            die "Не удалось сохранить исправление чтения RPC-аргументов."
+    fi
+
+    test_file="$tmp_dir/rpc-read-arg-test.sh"
+    sed -n '/^read_arg() {/,/^}/p' "$backend_file" > "$test_file"
+    grep -Fq '# MDM_READ_ARG_JSHN_V1' "$test_file" ||
+        die "Не удалось подготовить тест чтения RPC-аргументов."
+
+    (
+        # CI has no OpenWrt jshn library. Simulate its two-function contract there;
+        # on the router, test the actual bundled jshn implementation.
+        if [ -f /usr/share/libubox/jshn.sh ]; then
+            . /usr/share/libubox/jshn.sh
+        else
+            JSON_TEST_MAC=""
+            JSON_TEST_NAME=""
+            JSON_TEST_BAND=""
+            json_load() {
+                case "$1" in
+                    *'"mac":"02:ab:cd:ef:12:34"'*) JSON_TEST_MAC='02:ab:cd:ef:12:34' ;;
+                    *) JSON_TEST_MAC='' ;;
+                esac
+                case "$1" in
+                    *'"name":"MDM parser test"'*) JSON_TEST_NAME='MDM parser test' ;;
+                    *) JSON_TEST_NAME='' ;;
+                esac
+                case "$1" in
+                    *'"band_mode":"5g"'*) JSON_TEST_BAND='5g' ;;
+                    *) JSON_TEST_BAND='' ;;
+                esac
+            }
+            json_get_var() {
+                case "$2" in
+                    mac) eval "$1=\$JSON_TEST_MAC" ;;
+                    name) eval "$1=\$JSON_TEST_NAME" ;;
+                    band_mode) eval "$1=\$JSON_TEST_BAND" ;;
+                    *) eval "$1=" ;;
+                esac
+            }
+        fi
+
+        . "$test_file"
+        input='{"mac":"02:ab:cd:ef:12:34","name":"MDM parser test","band_mode":"5g"}'
+        [ "$(read_arg mac)" = "02:ab:cd:ef:12:34" ] || exit 1
+        [ "$(read_arg name)" = "MDM parser test" ] || exit 1
+        [ "$(read_arg band_mode)" = "5g" ] || exit 1
+    ) || die "Тест чтения MAC, имени и режима Wi-Fi из RPC-запроса не прошёл."
+
+    log "Проверка чтения RPC-аргументов прошла: MAC, имя и режим диапазона."
+}
+
+
 apply_mdns_discovery_patch() {
     local backend_file js_file mdns_helper mdns_patch ui_patch insert_helper
 
@@ -2402,6 +2500,7 @@ do_check() {
     download_source
     apply_mac_validation_patch
     apply_mac_normalizer_patch
+    apply_rpc_arg_parser_patch
     apply_device_hostname_precedence_fix
     apply_mdns_discovery_patch
     apply_ufp_fingerprint_patch
@@ -2497,6 +2596,7 @@ do_install() {
     download_source
     apply_mac_validation_patch
     apply_mac_normalizer_patch
+    apply_rpc_arg_parser_patch
     apply_device_hostname_precedence_fix
     apply_mdns_discovery_patch
     apply_ufp_fingerprint_patch
