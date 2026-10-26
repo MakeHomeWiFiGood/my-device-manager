@@ -2401,7 +2401,7 @@ clean_owned_app_files() {
             esac
             is_mdm_managed_file "$target_file" || continue
             if [ "$list_file" = "$STATE_DIR/original-files" ]; then
-                backup_file="\${BACKUP_DIR}\${target_file}"
+                backup_file="${BACKUP_DIR}${target_file}"
                 if [ ! -e "$backup_file" ] && [ ! -L "$backup_file" ]; then
                     die "Не найдена исходная резервная копия $backup_file; полная переустановка отменена без удаления файлов."
                 fi
