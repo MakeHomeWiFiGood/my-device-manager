@@ -43,6 +43,10 @@ jobs:
           grep -n -E -i -A22 -B12 'mac|register|unregister|actions =|registerButton|Некорректный' "$app/htdocs/luci-static/resources/view/my-device-manager/main.js" | head -n 900
           echo '=== BACKEND REGISTRATION SOURCE ==='
           grep -n -E -A35 -B20 'mac_normalize|mac_valid|register_device|register\|rename|register_dhcp|case "\$method"' "$app/root/usr/libexec/rpcd/luci.my_device_manager" | head -n 900
+          echo '=== REGISTRY WRITE TRANSACTION ==='
+          sed -n '260,450p' "$app/root/usr/libexec/rpcd/luci.my_device_manager"
+          echo '=== FINAL CLIENT ROW ==='
+          sed -n '190,250p' "$app/htdocs/luci-static/resources/view/my-device-manager/main.js"
 
 
       - name: Validate installer and prepare download artifact
