@@ -396,9 +396,9 @@ MDM_RPC_ARG_PATCH
             }
             json_get_var() {
                 case "$2" in
-                    mac) eval "$1=\$JSON_TEST_MAC" ;;
-                    name) eval "$1=\$JSON_TEST_NAME" ;;
-                    band_mode) eval "$1=\$JSON_TEST_BAND" ;;
+                    mac) eval "$1=\$(printf '%s' \"\$JSON_TEST_MAC\")" ;;
+                    name) eval "$1=\$(printf '%s' \"\$JSON_TEST_NAME\")" ;;
+                    band_mode) eval "$1=\$(printf '%s' \"\$JSON_TEST_BAND\")" ;;
                     *) eval "$1=" ;;
                 esac
             }
