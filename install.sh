@@ -202,7 +202,7 @@ MDM_MAC_VALIDATION
         mac_valid 'aa:bb:cc:dd:ee:ff' || exit 1
         mac_valid 'AA:BB:CC:DD:EE:FF' || exit 1
         mac_valid 'aa-bb-cc-dd-ee-ff' || exit 1
-        mac_valid 'e8:88:43:6f:fb:e3' || exit 1
+        mac_valid '02:ab:cd:ef:12:34' || exit 1
         if mac_valid 'aa:bb:cc:dd:ee:gg'; then exit 1; fi
         if mac_valid 'aa:bb:cc:dd:ee'; then exit 1; fi
         if mac_valid '0:bb:cc:dd:ee:ff'; then exit 1; fi
@@ -219,16 +219,16 @@ apply_mac_normalizer_patch() {
     backend_file="$package_dir/root/usr/libexec/rpcd/luci.my_device_manager"
     [ -f "$backend_file" ] || die "Не найден RPC-обработчик для нормализации MAC-адресов."
 
-    if ! grep -Fq '# MDM_MAC_NORMALIZER_V4' "$backend_file"; then
+    if ! grep -Fq '# MDM_MAC_NORMALIZER_V5' "$backend_file"; then
         [ "$(grep -Fc 'mac_normalize() {' "$backend_file" || true)" = "1" ] ||
             die "Не удалось однозначно найти нормализатор MAC-адреса."
         normalizer_patch="$tmp_dir/mac-normalizer.awk"
         cat > "$normalizer_patch" <<'MDM_MAC_NORMALIZER'
 function print_mac_normalizer() {
     print "mac_normalize() {"
-    print "    # MDM_MAC_NORMALIZER_V4: tolerate whitespace, colon, hyphen, dot and compact notation."
+    print "    # MDM_MAC_NORMALIZER_V5: tolerate whitespace, colon, hyphen, dot and compact notation."
     print "    local raw compact compact_length"
-    print "    raw=$(printf '%s' \"$1\" | tr 'A-F' 'a-f' | tr -d '[:space:]')"
+    print "    raw=$(printf '%s' \"$1\" | tr 'A-F' 'a-f' | sed 's/[[:space:]]//g')"
     print "    case \"$raw\" in *[!0123456789abcdef:.-]*) printf '%s' \"$raw\" | tr '-' ':'; return 0 ;; esac"
     print "    compact=$(printf '%s' \"$raw\" | tr -d ':' | tr -d '.' | tr -d '-')"
     print "    compact_length=${#compact}"
@@ -254,7 +254,7 @@ END { if (!replaced || in_function) exit 1 }
 MDM_MAC_NORMALIZER
         awk -f "$normalizer_patch" "$backend_file" > "$tmp_dir/backend.mac-normalizer" ||
             die "Не удалось заменить нормализатор MAC-адреса."
-        grep -Fq '# MDM_MAC_NORMALIZER_V4' "$tmp_dir/backend.mac-normalizer" ||
+        grep -Fq '# MDM_MAC_NORMALIZER_V5' "$tmp_dir/backend.mac-normalizer" ||
             die "Обновлённый нормализатор MAC-адреса не найден."
         sh -n "$tmp_dir/backend.mac-normalizer" ||
             die "RPC-обработчик после обновления нормализатора не прошёл проверку синтаксиса."
@@ -289,7 +289,7 @@ MDM_LOCAL_REGISTER_MAC
 
     test_file="$tmp_dir/mac-normalizer-test.sh"
     sed -n '/^mac_normalize() {/,/^}/p; /^mac_valid() {/,/^}/p' "$backend_file" > "$test_file"
-    grep -Fq '# MDM_MAC_NORMALIZER_V4' "$test_file" ||
+    grep -Fq '# MDM_MAC_NORMALIZER_V5' "$test_file" ||
         die "Не удалось подготовить тест нормализатора MAC-адреса."
     (
         . "$test_file"
@@ -301,13 +301,13 @@ MDM_LOCAL_REGISTER_MAC
                 return 1
             fi
         }
-        expect_mac_normalized 'e8:88:43:6f:fb:e3' 'e8:88:43:6f:fb:e3' || exit 1
-        expect_mac_normalized 'E8:88:43:6F:FB:E3' 'e8:88:43:6f:fb:e3' || exit 1
-        expect_mac_normalized 'e8-88-43-6f-fb-e3' 'e8:88:43:6f:fb:e3' || exit 1
-        expect_mac_normalized 'e888436ffbe3' 'e8:88:43:6f:fb:e3' || exit 1
-        expect_mac_normalized 'e888.436f.fbe3' 'e8:88:43:6f:fb:e3' || exit 1
-        expect_mac_normalized ' E8:88:43:6F:FB:E3 ' 'e8:88:43:6f:fb:e3' || exit 1
-        mac_valid "$(mac_normalize 'e8:88:43:6f:fb:e3')" || exit 1
+        expect_mac_normalized '02:ab:cd:ef:12:34' '02:ab:cd:ef:12:34' || exit 1
+        expect_mac_normalized '02:AB:CD:EF:12:34' '02:ab:cd:ef:12:34' || exit 1
+        expect_mac_normalized '02-ab-cd-ef-12-34' '02:ab:cd:ef:12:34' || exit 1
+        expect_mac_normalized '02abcdef1234' '02:ab:cd:ef:12:34' || exit 1
+        expect_mac_normalized '02ab.cdef.1234' '02:ab:cd:ef:12:34' || exit 1
+        expect_mac_normalized ' 02:AB:CD:EF:12:34 ' '02:ab:cd:ef:12:34' || exit 1
+        mac_valid "$(mac_normalize '02:ab:cd:ef:12:34')" || exit 1
         bad_mac=$(mac_normalize 'Poco X5 Pro')
         if mac_valid "$bad_mac"; then
             printf '[My Device Manager] Ошибка теста: текстовое имя не должно приниматься как MAC; результат <%s>.\n' "$bad_mac" >&2
