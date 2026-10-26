@@ -2,7 +2,7 @@ name: Validate OpenWrt installer
 
 on:
   push:
-    branches: [main]
+    branches: [main, registration-model-rewrite]
     tags: ['v*']
   workflow_dispatch:
 
@@ -32,6 +32,17 @@ jobs:
           "$RUNNER_TEMP/mdm-source/check-source.sh"
           test -f "$RUNNER_TEMP/mdm-source/luci-app-my-device-manager/root/usr/share/luci/menu.d/luci-app-my-device-manager.json"
           test -f "$RUNNER_TEMP/mdm-source/luci-app-my-device-manager/root/usr/share/rpcd/acl.d/luci-app-my-device-manager.json"
+
+      - name: Inspect registration and client-row implementation for rewrite
+        if: github.ref == 'refs/heads/registration-model-rewrite'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/mdm-source/luci-app-my-device-manager"
+          echo '=== MAIN.JS REGISTRATION MATCHES ==='
+          grep -n -E -i -A22 -B12 'mac|register|unregister|actions =|registerButton|Некорректный' "$app/htdocs/luci-static/resources/view/my-device-manager/main.js" | head -n 900
+          echo '=== BACKEND REGISTRATION SOURCE ==='
+          grep -n -E -A35 -B20 'mac_normalize|mac_valid|register_device|register\|rename|register_dhcp|case "\$method"' "$app/root/usr/libexec/rpcd/luci.my_device_manager" | head -n 900
 
 
       - name: Validate installer and prepare download artifact
