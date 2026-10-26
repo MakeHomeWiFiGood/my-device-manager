@@ -12,7 +12,7 @@ For associated Wi-Fi clients, the app can display the radio/band, channel, signa
 
 - **«Зарегистрировать»** adds the device to My Device Manager only. It does not create or modify a static DHCP lease; the app's device settings and Wi-Fi band selector become available immediately.
 - **«Зарегистрировать DHCP-запись»** is a separate action for an app-registered device with an IPv4 address when a static reservation is not detected. It validates the MAC and IP, refuses conflicts with existing static DHCP reservations, then creates a standard OpenWrt `dhcp host` entry and reloads dnsmasq. If applying the change fails, the previous DHCP configuration is restored where possible.
-- Local registration intentionally skips the strict MAC-format validator after normalizing letter case and common separators. For manual registration, enter the device's actual MAC because the registry and Wi-Fi controls use it as the key. The separate DHCP step still validates MAC and IPv4 and checks reservation conflicts. The **«DHCP Регистрация»** button appears only for registered devices with an IP and is hidden when a static DHCP reservation is already detected.
+- Local registration now installs its MAC-validation bypass immediately after reading the MAC, before any strict validator can reject the registry-only operation; the MAC is still normalized by the next step. The separate DHCP-registration action keeps strict MAC/IP checks. For manual registration, enter the device's actual MAC because the registry and Wi-Fi controls use it as the key. The separate DHCP step still validates MAC and IPv4 and checks reservation conflicts. The **«DHCP Регистрация»** button appears only for registered devices with an IP and is hidden when a static DHCP reservation is already detected.
 
 ## Diagnostic logging for registration
 
@@ -41,7 +41,7 @@ Register the device's current Wi-Fi MAC address. If a client uses MAC randomizat
 Run these commands in an SSH session as `root` on the router:
 
 ```sh
-wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.22/install.sh
+wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.23/install.sh
 sh /root/mdm-install.sh check &&
 sh /root/mdm-install.sh reinstall
 ```
