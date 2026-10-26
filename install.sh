@@ -214,6 +214,95 @@ MDM_MAC_VALIDATION
 }
 
 
+apply_mac_normalizer_patch() {
+    local backend_file normalizer_patch test_file local_patch
+    backend_file="$package_dir/root/usr/libexec/rpcd/luci.my_device_manager"
+    [ -f "$backend_file" ] || die "Не найден RPC-обработчик для нормализации MAC-адресов."
+
+    if ! grep -Fq '# MDM_MAC_NORMALIZER_V2' "$backend_file"; then
+        [ "$(grep -Fc 'mac_normalize() {' "$backend_file" || true)" = "1" ] ||
+            die "Не удалось однозначно найти нормализатор MAC-адреса."
+        normalizer_patch="$tmp_dir/mac-normalizer.awk"
+        cat > "$normalizer_patch" <<'MDM_MAC_NORMALIZER'
+function print_mac_normalizer() {
+    print "mac_normalize() {"
+    print "    # MDM_MAC_NORMALIZER_V2: tolerate whitespace, colon, hyphen, dot and compact notation."
+    print "    local raw compact compact_length"
+    print "    raw=$(printf '%s' \"$1\" | tr 'A-F' 'a-f' | tr -d '[:space:]')"
+    print "    compact=$(printf '%s' \"$raw\" | tr -cd '0123456789abcdef')"
+    print "    compact_length=$(printf '%s' \"$compact\" | wc -c | tr -d ' ')"
+    print "    if [ \"$compact_length\" -eq 12 ]; then"
+    print "        printf '%s:%s:%s:%s:%s:%s' \"$(printf '%s' \"$compact\" | cut -c1-2)\" \"$(printf '%s' \"$compact\" | cut -c3-4)\" \"$(printf '%s' \"$compact\" | cut -c5-6)\" \"$(printf '%s' \"$compact\" | cut -c7-8)\" \"$(printf '%s' \"$compact\" | cut -c9-10)\" \"$(printf '%s' \"$compact\" | cut -c11-12)\""
+    print "    else"
+    print "        printf '%s' \"$raw\" | tr '-' ':'"
+    print "    fi"
+    print "}"
+}
+$0 == "mac_normalize() {" && !replaced {
+    print_mac_normalizer()
+    in_function = 1
+    replaced = 1
+    next
+}
+in_function {
+    if ($0 ~ /^[[:space:]]*}[[:space:]]*$/) in_function = 0
+    next
+}
+{ print }
+END { if (!replaced || in_function) exit 1 }
+MDM_MAC_NORMALIZER
+        awk -f "$normalizer_patch" "$backend_file" > "$tmp_dir/backend.mac-normalizer" ||
+            die "Не удалось заменить нормализатор MAC-адреса."
+        grep -Fq '# MDM_MAC_NORMALIZER_V2' "$tmp_dir/backend.mac-normalizer" ||
+            die "Обновлённый нормализатор MAC-адреса не найден."
+        sh -n "$tmp_dir/backend.mac-normalizer" ||
+            die "RPC-обработчик после обновления нормализатора не прошёл проверку синтаксиса."
+        mv "$tmp_dir/backend.mac-normalizer" "$backend_file" ||
+            die "Не удалось сохранить нормализатор MAC-адреса."
+    fi
+
+    # Normalize MAC in the shared manual/device-row registration path.
+    if ! grep -Fq '# MDM_LOCAL_REGISTER_MAC_CANONICAL' "$backend_file"; then
+        local_patch="$tmp_dir/local-register-mac.awk"
+        cat > "$local_patch" <<'MDM_LOCAL_REGISTER_MAC'
+{
+    if ($0 == "            register|rename)") in_register = 1
+    print
+    if (in_register && $0 == "                mac=$(read_arg mac)" && !added) {
+        print "                mac=$(mac_normalize \"$mac\") # MDM_LOCAL_REGISTER_MAC_CANONICAL"
+        added = 1
+    }
+    if (in_register && $0 == "                ;;") in_register = 0
+}
+END { if (!added) exit 1 }
+MDM_LOCAL_REGISTER_MAC
+        awk -f "$local_patch" "$backend_file" > "$tmp_dir/backend.local-register-mac" ||
+            die "Не удалось нормализовать MAC перед регистрацией в My Device Manager."
+        grep -Fq '# MDM_LOCAL_REGISTER_MAC_CANONICAL' "$tmp_dir/backend.local-register-mac" ||
+            die "Нормализация MAC перед регистрацией не подключена."
+        sh -n "$tmp_dir/backend.local-register-mac" ||
+            die "Обработчик регистрации после нормализации MAC не прошёл проверку синтаксиса."
+        mv "$tmp_dir/backend.local-register-mac" "$backend_file" ||
+            die "Не удалось сохранить обработчик нормализации MAC перед регистрацией."
+    fi
+
+    test_file="$tmp_dir/mac-normalizer-test.sh"
+    sed -n '/^mac_normalize() {/,/^}/p; /^mac_valid() {/,/^}/p' "$backend_file" > "$test_file"
+    grep -Fq '# MDM_MAC_NORMALIZER_V2' "$test_file" ||
+        die "Не удалось подготовить тест нормализатора MAC-адреса."
+    (
+        . "$test_file"
+        [ "$(mac_normalize 'e8:88:43:6f:fb:e3')" = 'e8:88:43:6f:fb:e3' ] || exit 1
+        [ "$(mac_normalize 'E8:88:43:6F:FB:E3')" = 'e8:88:43:6f:fb:e3' ] || exit 1
+        [ "$(mac_normalize 'e8-88-43-6f-fb-e3')" = 'e8:88:43:6f:fb:e3' ] || exit 1
+        [ "$(mac_normalize 'e888436ffbe3')" = 'e8:88:43:6f:fb:e3' ] || exit 1
+        [ "$(mac_normalize 'e888.436f.fbe3')" = 'e8:88:43:6f:fb:e3' ] || exit 1
+        mac_valid "$(mac_normalize 'e8:88:43:6f:fb:e3')" || exit 1
+        if mac_valid "$(mac_normalize 'Poco X5 Pro')"; then exit 1; fi
+    ) || die "Нормализация MAC не прошла тесты обычного формата и вариантов записи."
+    log "Нормализация MAC проверена: регистр букв, пробелы, дефисы, точки и компактный формат."
+}
+
 apply_mdns_discovery_patch() {
     local backend_file js_file mdns_helper mdns_patch ui_patch insert_helper
 
@@ -1822,7 +1911,7 @@ MDM_DHCP_REGISTER_ACL
     if (index($0, "actions.push(bandSelect);") > 0 && index($0, "registerDhcpButton") == 0) {
         print
         print "\t\t\t\tvar dhcpMode = String(d.dhcp_mode || '').toLowerCase();"
-        print "\t\t\t\tvar hasDhcpReservation = /static|reserved|reservation|registered|host/.test(dhcpMode);"
+        print "\t\t\t\tvar hasDhcpReservation = !!d.dhcp_reserved || /static|reserved|reservation|registered|host/.test(dhcpMode);"
         print "\t\t\t\tif (d.registered && d.ip && !hasDhcpReservation) {"
         print "\t\t\t\t\tvar dhcpRegisterButton = E('button', { 'class': 'cbi-button cbi-button-action', 'click': function() {"
         print "\t\t\t\t\t\tif (!window.confirm('Создать статическую DHCP-резервацию для ' + d.mac + ' с IP ' + d.ip + '?')) return;"
@@ -1838,7 +1927,7 @@ MDM_DHCP_REGISTER_ACL
         print "\t\t\t\t\t\t\tui.addNotification(null, E('p', {}, rpcErrorMessage(err)), 'error');"
         print "\t\t\t\t\t\t\tdhcpRegisterButton.disabled = false;"
         print "\t\t\t\t\t\t});"
-        print "\t\t\t\t\t} }, 'DHCP Регистрация');"
+        print "\t\t\t\t\t} }, 'Зарегистрировать DHCP-запись');"
         print "\t\t\t\t\tactions.push(dhcpRegisterButton);"
         print "\t\t\t\t}"
         next
@@ -1859,7 +1948,7 @@ MDM_DHCP_REGISTER_UI
             die "Не удалось добавить кнопку DHCP-регистрации."
         grep -Fq 'callRegisterDhcp' "$tmp_dir/main.dhcp-register.js" ||
             die "Не удалось подключить кнопку DHCP-регистрации к RPC."
-        grep -Fq 'DHCP Регистрация' "$tmp_dir/main.dhcp-register.js" ||
+        grep -Fq 'Зарегистрировать DHCP-запись' "$tmp_dir/main.dhcp-register.js" ||
             die "Не удалось добавить подпись DHCP-регистрации."
         grep -Fq 'd.registered && d.ip && !hasDhcpReservation' "$tmp_dir/main.dhcp-register.js" ||
             die "Кнопка DHCP-регистрации не ограничена зарегистрированными устройствами."
@@ -1911,6 +2000,7 @@ validate_payload() {
 do_check() {
     download_source
     apply_mac_validation_patch
+    apply_mac_normalizer_patch
     apply_device_hostname_precedence_fix
     apply_mdns_discovery_patch
     apply_ufp_fingerprint_patch
@@ -1928,6 +2018,7 @@ do_install() {
 
     download_source
     apply_mac_validation_patch
+    apply_mac_normalizer_patch
     apply_device_hostname_precedence_fix
     apply_mdns_discovery_patch
     apply_ufp_fingerprint_patch
