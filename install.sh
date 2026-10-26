@@ -2060,9 +2060,9 @@ mdm_logging_enabled() {
     # A missing /tmp marker means the default state, so logging returns after reboot.
     if [ ! -e "$MDM_LOG_ENABLE_FILE" ]; then
         umask 077
-        printf '1\\n' > "$MDM_LOG_ENABLE_FILE" || return 1
+        printf '1\n' > "$MDM_LOG_ENABLE_FILE" || return 1
         : > "$MDM_LOG_FILE" 2>/dev/null || true
-        printf '[%s] diagnostic logging enabled by default\\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf 'unknown-time')" >> "$MDM_LOG_FILE" 2>/dev/null || true
+        printf '[%s] diagnostic logging enabled by default\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf 'unknown-time')" >> "$MDM_LOG_FILE" 2>/dev/null || true
         chmod 600 "$MDM_LOG_ENABLE_FILE" "$MDM_LOG_FILE" 2>/dev/null || true
     fi
     [ "$(cat "$MDM_LOG_ENABLE_FILE" 2>/dev/null)" = "1" ]
@@ -2095,7 +2095,7 @@ mdm_logging_set() {
         0)
             mdm_debug_log "diagnostic logging disabled"
             umask 077
-            printf '0\\n' > "$MDM_LOG_ENABLE_FILE" || return 1
+            printf '0\n' > "$MDM_LOG_ENABLE_FILE" || return 1
             chmod 600 "$MDM_LOG_ENABLE_FILE" 2>/dev/null || true
             # MDM_LOG_EXPLICIT_OFF
             ;;
@@ -2537,9 +2537,9 @@ do_install() {
 
     # MDM_DIAGNOSTIC_DEFAULT_ON
     umask 077
-    printf '1\\n' > /tmp/my-device-manager-logging.enabled ||
+    printf '1\n' > /tmp/my-device-manager-logging.enabled ||
         die "Не удалось включить режим отладки по умолчанию."
-    printf '[%s] diagnostic logging enabled by installer\\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf 'unknown-time')" > /tmp/my-device-manager.log ||
+    printf '[%s] diagnostic logging enabled by installer\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf 'unknown-time')" > /tmp/my-device-manager.log ||
         die "Не удалось создать журнал отладки."
     chmod 600 /tmp/my-device-manager-logging.enabled /tmp/my-device-manager.log 2>/dev/null || true
 
