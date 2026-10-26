@@ -1619,7 +1619,7 @@ MDM_BAND_SCHEMA
     if (index($0, "E('td', {}, E('span', { 'class': statusClass }, status)),") > 0 &&
         index($0, "mdm-unregistered") == 0) {
         old = "E('td', {}, E('span', { 'class': statusClass }, status)),"
-        new = "E('td', {}, [E('span', { 'class': statusClass }, status), !d.registered ? E('div', { 'class': 'mdm-unregistered' }, 'Устройство не зарегистрировано') : '']),"
+        new = "E('td', {}, [E('span', { 'class': statusClass }, status), E('div', { 'class': 'mdm-unregistered' }, 'Устройство не зарегистрировано')]),"
         at = index($0, old)
         if (at > 0) $0 = substr($0, 1, at - 1) new substr($0, at + length(old))
     }
@@ -2494,7 +2494,8 @@ skipping_lookup {
 }
 in_band && index($0, "band_remove_acl_entries \"$section\" \"$mac\" || {") > 0 && !created_block {
     print "    if [ \"$new_record\" = \"1\" ]; then"
-    print "        section=$(uci add \"$PACKAGE\" device 2>/dev/null) || {"
+    print "        section=$(section_for_mac \"$mac\")"
+    print "        uci set \"$PACKAGE.$section=device\" >/dev/null 2>&1 || {"
     print "            band_transaction_rollback \"$tx_dir\" 0"
     print "            BAND_ERROR=band_mode_apply_failed"
     print "            return 1"
@@ -2533,7 +2534,7 @@ MDM_BAND_ONLY_BACKEND
         actions_hidden=1
     }
     if (index($0, "if (d.registered && d.ip && !hasDhcpReservation) {") > 0) {
-        sub(/if \(d\.registered && d\.ip && !hasDhcpReservation\) \{/, "if (false && d.registered && d.ip && !hasDhcpReservation) {")
+        sub(/if \(d\.registered && d\.ip && !hasDhcpReservation\) \{/, "if (false) {")
         dhcp_button_hidden=1
     }
     print
@@ -2546,7 +2547,7 @@ MDM_BAND_ONLY_UI
             die "Не удалось убрать кнопки регистрации устройства и DHCP."
         grep -Fq 'var actions = []; // MDM_SIMPLE_BAND_ONLY_UI_V1' "$tmp_dir/main.band-only.js" ||
             die "Кнопка регистрации осталась в интерфейсе."
-        grep -Fq 'if (false && d.registered && d.ip && !hasDhcpReservation)' "$tmp_dir/main.band-only.js" ||
+        grep -Fq 'if (false) {' "$tmp_dir/main.band-only.js" ||
             die "Кнопка регистрации DHCP осталась активной."
         grep -Fq 'if (d.mac) {' "$tmp_dir/main.band-only.js" ||
             die "Выбор диапазона не подключён к обнаруженным устройствам."
