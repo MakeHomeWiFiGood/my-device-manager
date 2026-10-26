@@ -51,11 +51,12 @@ jobs:
           cp install.sh artifacts/install.sh
           sha256sum artifacts/install.sh > artifacts/install.sh.sha256
           cat > artifacts/INSTALL.txt <<'EOF'
-          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.21)
+          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.22)
           
           Run as root:
-            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.21/install.sh
-            sh /root/mdm-install.sh install
+            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.22/install.sh
+            sh /root/mdm-install.sh check
+            sh /root/mdm-install.sh reinstall
           
           To remove the installed app and restore files backed up by the installer:
             sh /root/mdm-install.sh uninstall
@@ -72,13 +73,13 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish My Device Manager v0.2.21 — opt-in registration diagnostics
+      - name: Publish My Device Manager v0.2.22 — safe full reinstall and device controls
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.2.21
+          tag_name: v0.2.22
           target_commitish: ${{ github.sha }}
-          name: My Device Manager v0.2.21 — opt-in registration diagnostics
+          name: My Device Manager v0.2.22 — safe full reinstall and device controls
           overwrite_files: true
           generate_release_notes: true
           files: artifacts/*
@@ -98,6 +99,7 @@ jobs:
             /tmp/my-device-manager.log. The log is RAM-only, capped, cleared when diagnostics are enabled
             again, and does not contain device names, IP addresses or Wi-Fi passwords. Logging is disabled
             by default and does not persist across a reboot.
+            Adds an explicit `reinstall` command for a full clean replacement of installer-owned app files. It verifies backups before removing tracked files, removes only known My Device Manager paths, preserves `/etc/config/my_device_manager` and the backup manifests, and does not alter `wireless`, DHCP, firewall, mwan3 or Tachyon settings.
             Adds persistent per-device Wi-Fi band selection for registered devices:
             2.4 GHz only, 5 GHz only, or both bands without an MDM-created restriction
             (the client chooses its band). Unregistered clients are marked
