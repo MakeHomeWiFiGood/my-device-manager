@@ -556,7 +556,7 @@ MDM_MDNS_HELPER
         print "                    preferred=service_label[ip[m]];"
         print "                    if (preferred == \"\") preferred=mdns_hostname[ip[m]];"
         print "                }"
-        print "                printf \"%s|%s|%s|%s|%d|%d|%s|%s|%s|%s|%s|%s|%s\n\", m, ip[m], host[m], iface[m], online[m]+0, registered[m]+0, name[m], band[m], down[m], up[m], dns[m], mode[m], preferred;"
+        print "                printf \"%s|%s|%s|%s|%d|%d|%s|%s|%s|%s|%s|%s|%s\\n\", m, ip[m], host[m], iface[m], online[m]+0, registered[m]+0, name[m], band[m], down[m], up[m], dns[m], mode[m], preferred;"
         next
     }
 
@@ -768,7 +768,7 @@ MDM_UFP_HELPER
     }
 
     if (index($0, "preferred;") > 0 && index($0, "printf") > 0) {
-        $0 = "                printf \"%s|%s|%s|%s|%d|%d|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n\", m, ip[m], host[m], iface[m], online[m]+0, registered[m]+0, name[m], band[m], down[m], up[m], dns[m], mode[m], preferred, ufp_vendor[tolower(m)], ufp_device[tolower(m)], ufp_device_name[tolower(m)];"
+        $0 = "                printf \"%s|%s|%s|%s|%d|%d|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\n\", m, ip[m], host[m], iface[m], online[m]+0, registered[m]+0, name[m], band[m], down[m], up[m], dns[m], mode[m], preferred, ufp_vendor[tolower(m)], ufp_device[tolower(m)], ufp_device_name[tolower(m)];"
     }
 
     if (index($0, "dns_name dhcp_mode discovered_name; do") > 0)
@@ -1046,7 +1046,7 @@ MDM_WIFI_HELPER
     }
 
     if (index($0, "ufp_device_name[tolower(m)]") > 0 && index($0, "printf") > 0) {
-        print "                printf \"%s|%s|%s|%s|%d|%d|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n\", m, ip[m], host[m], iface[m], online[m]+0, registered[m]+0, name[m], band[m], down[m], up[m], dns[m], mode[m], preferred, ufp_vendor[tolower(m)], ufp_device[tolower(m)], ufp_device_name[tolower(m)], wifi_iface[tolower(m)], wifi_frequency_mhz[tolower(m)], wifi_signal_dbm[tolower(m)], wifi_standard[tolower(m)], wifi_rx_rate_mbps[tolower(m)], wifi_tx_rate_mbps[tolower(m)], wifi_rx_bytes[tolower(m)], wifi_tx_bytes[tolower(m)];"
+        print "                printf \"%s|%s|%s|%s|%d|%d|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\n\", m, ip[m], host[m], iface[m], online[m]+0, registered[m]+0, name[m], band[m], down[m], up[m], dns[m], mode[m], preferred, ufp_vendor[tolower(m)], ufp_device[tolower(m)], ufp_device_name[tolower(m)], wifi_iface[tolower(m)], wifi_frequency_mhz[tolower(m)], wifi_signal_dbm[tolower(m)], wifi_standard[tolower(m)], wifi_rx_rate_mbps[tolower(m)], wifi_tx_rate_mbps[tolower(m)], wifi_rx_bytes[tolower(m)], wifi_tx_bytes[tolower(m)];"
         next
     }
 
@@ -1495,7 +1495,7 @@ MDM_BAND_UNREGISTER
         print "                if ! lock_begin; then"
         print "                    emit_error 'configuration_busy'"
         print "                elif band_mode_apply_locked \"$mac\" \"$band_mode\"; then"
-        print "                    printf '{\"ok\":true,\"mac\":\"%s\",\"band_mode\":\"%s\"}\n' \"$(mac_normalize \"$mac\")\" \"$band_mode\""
+        print "                    printf '{\"ok\":true,\"mac\":\"%s\",\"band_mode\":\"%s\"}\\n' \"$(mac_normalize \"$mac\")\" \"$band_mode\""
         print "                else"
         print "                    emit_error \"$BAND_ERROR\""
         print "                fi"
@@ -1854,7 +1854,7 @@ MDM_DHCP_REGISTER_HELPER
         print "                if ! lock_begin; then"
         print "                    emit_error 'configuration_busy'"
         print "                elif register_dhcp_locked \"$mac\" \"$ip\" \"$name\"; then"
-        print "                    printf '{\"ok\":true,\"mac\":\"%s\",\"ip\":\"%s\"}\n' \"$(mac_normalize \"$mac\")\" \"$ip\""
+        print "                    printf '{\"ok\":true,\"mac\":\"%s\",\"ip\":\"%s\"}\\n' \"$(mac_normalize \"$mac\")\" \"$ip\""
         print "                else"
         print "                    emit_error \"$DHCP_REGISTER_ERROR\""
         print "                fi"
@@ -2290,9 +2290,9 @@ MDM_DIAGNOSTIC_ERROR
     if ($0 == "            set_band_mode)") {
         print "            get_logging)"
         print "                if mdm_logging_enabled; then"
-        print "                    printf '{\"ok\":true,\"enabled\":true}\n'"
+        print "                    printf '{\"ok\":true,\"enabled\":true}\\n'"
         print "                else"
-        print "                    printf '{\"ok\":true,\"enabled\":false}\n'"
+        print "                    printf '{\"ok\":true,\"enabled\":false}\\n'"
         print "                fi"
         print "                ;;"
         print "            set_logging)"
@@ -2301,9 +2301,9 @@ MDM_DIAGNOSTIC_ERROR
         print "                    1|0)"
         print "                        if mdm_logging_set \"$mdm_logging_value\"; then"
         print "                            if [ \"$mdm_logging_value\" = \"1\" ]; then"
-        print "                                printf '{\"ok\":true,\"enabled\":true}\n'"
+        print "                                printf '{\"ok\":true,\"enabled\":true}\\n'"
         print "                            else"
-        print "                                printf '{\"ok\":true,\"enabled\":false}\n'"
+        print "                                printf '{\"ok\":true,\"enabled\":false}\\n'"
         print "                            fi"
         print "                        else"
         print "                            emit_error 'logging_update_failed'"
