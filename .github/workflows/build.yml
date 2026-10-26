@@ -53,10 +53,10 @@ jobs:
           cp install.sh artifacts/install.sh
           sha256sum artifacts/install.sh > artifacts/install.sh.sha256
           cat > artifacts/INSTALL.txt <<'EOF'
-          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.27)
+          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.28)
           
           Run as root:
-            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.27/install.sh
+            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.28/install.sh
             sh /root/mdm-install.sh check
             sh /root/mdm-install.sh reinstall
           
@@ -64,7 +64,7 @@ jobs:
             sh /root/mdm-install.sh uninstall
           
           Requires LuCI and access to raw.githubusercontent.com.
-          Registration is split into two steps: “Зарегистрировать” stores the client in My Device Manager only; “Зарегистрировать DHCP-запись” separately creates a checked static DHCP reservation. Per-device Wi-Fi band selection is supported for registered clients; changing restrictions may briefly reload Wi-Fi. Per-device speed enforcement is not implemented. The app does not change mwan3, Tachyon, proxy routing, or firewall policies.
+          The app discovers clients from DHCP/mDNS/neighbours and hostapd; users do not register devices in the app or create DHCP reservations through it. Band selection is offered for discovered MAC addresses and applying a restriction may briefly reload Wi-Fi. The installer itself does not change Wi-Fi, DHCP, firewall, mwan3, Tachyon or proxy routing.
           EOF
 
       - name: Upload installer artifact
@@ -75,49 +75,19 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish My Device Manager v0.2.27 — temporarily skip RPC argument value test
+      - name: Publish My Device Manager v0.2.28 — simplified discovery and Wi-Fi band controls
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.2.27
+          tag_name: v0.2.28
           target_commitish: ${{ github.sha }}
-          name: My Device Manager v0.2.27 — temporarily skip RPC argument value test
+          name: My Device Manager v0.2.28 — simplified discovery and Wi-Fi band controls
           overwrite_files: true
           generate_release_notes: true
           files: artifacts/*
           body: |
-            v0.2.27: Temporarily disables the functional pre-install RPC argument test for MAC/name/band_mode that was blocking the target router's `check` command. The code patch, shell syntax checks and installer patch-integrity checks remain. This is not a claim that live registration is fixed; verify registration and Wi-Fi band selection through LuCI after update.
-            Fixes the v0.2.25 pre-install check on OpenWrt when strict shell mode is enabled: RPC argument parsing now passes an explicit empty default to jshn's `json_get_var`, whose implementation otherwise may reference an unset third argument. The regression check exercises the installed OpenWrt jshn library on the router and retains a synthetic parser fixture for CI.
-            Fixes registration failing with “Некорректный MAC-адрес”: the registry-only path now installs its validation bypass immediately after reading the MAC and before any strict MAC checks can run. It still canonicalizes input first and does not relax validation for the separate DHCP-registration action.
-            Adds a CI assertion that the registration bypass precedes any strict MAC validation call.
-            Fixes BusyBox MAC normalization: whitespace is removed with `sed` rather than `tr -d '[:space:]'`,
-            avoiding deletion of literal characters from MAC addresses on the router. Tests use a synthetic MAC fixture,
-            not a real device's address.
-            Splits device registration into two independent operations: “Зарегистрировать”
-            stores the device in My Device Manager only and does not edit DHCP, while
-            “Зарегистрировать DHCP-запись” separately validates the IPv4 address, refuses conflicts
-            with existing static DHCP reservations, and creates a normal OpenWrt DHCP host.
-            The first “Зарегистрировать” action stores the client only in the My Device Manager registry and normalizes common MAC notations before the record is written. This release replaces older MAC normalizers instead of trusting an existing version marker, and adds explicit output when a normalization test fails. The separate “Зарегистрировать DHCP-запись” action retains MAC/IP validation
-            and reservation conflict checks. Its button is shown only for registered devices with an IP address and is omitted when a static reservation already exists. MAC input accepts common colon/hyphen/dot, compact, upper/lowercase and surrounding-whitespace variants after normalization.
-            Fixes installer validation by forcibly upgrading the normalizer implementation and testing uppercase, lowercase, colon, hyphen, dotted, compact and surrounding-whitespace forms with diagnostic output on failure.
-            Fixes the previous release's failure to enable debug logging by default. The installer
-            creates /tmp/my-device-manager.log and enables logging immediately; a missing state marker
-            after reboot also resolves to the default-on state. The LuCI toggle can explicitly disable
-            logging until reboot. The capped RAM-only log records the normalized MAC used for registration
-            and internal RPC error codes, not device names, IP addresses or Wi-Fi passwords.
-            Adds an explicit `reinstall` command for a full clean replacement of installer-owned app files. It verifies backups before removing tracked files, removes only known My Device Manager paths, preserves `/etc/config/my_device_manager` and the backup manifests, and does not alter `wireless`, DHCP, firewall, mwan3 or Tachyon settings.
-            Adds persistent per-device Wi-Fi band selection for registered devices:
-            2.4 GHz only, 5 GHz only, or both bands without an MDM-created restriction
-            (the client chooses its band). Unregistered clients are marked
-            "Устройство не зарегистрировано". Applying a restriction may briefly
-            reload Wi-Fi; the installer checks for a matching SSID and security
-            settings on the permitted band before applying it, refuses conflicting
-            manual allow-lists, and only removes ACL entries created by MDM.
-            Unregistering a device or uninstalling MDM removes its owned restrictions.
-            The app does not change firewall, mwan3, Tachyon, tc, or proxy routing.
-            Also includes the earlier fixes: executable rpcd handler, mDNS discovery,
-            optional UFP fingerprints, Wi-Fi link telemetry, and independent parsing
-            of Wi-Fi counters. UFP is not installed by this installer.
-            Fixes missing RPC parameters during registration and band selection by reading request fields with OpenWrt's bundled jshn instead of relying on jsonfilter. In v0.2.27, the pre-install functional test for MAC, name and band_mode extraction is temporarily disabled at the user's request; the actual registration flow still needs live validation.
-            CI checks the source bundle, installer patch paths and shell syntax;
-            live validation on the target router remains pending.
+            v0.2.28 simplifies the interface: devices are discovered from DHCP/mDNS/neighbour and hostapd data; there are no device registration or DHCP-registration controls in LuCI. Every discovered MAC has a band selector: 2.4 GHz only, 5 GHz only, or both bands with no MDM-created restriction so the client chooses.
+            Per-device restrictions are saved on demand and keyed by MAC; merely viewing a client does not create a record. Applying a restriction can reload Wi-Fi, but installation/reinstallation does not change wireless configuration. The backend verifies compatible SSID/security on the permitted band and refuses conflicts with manual allow-lists or ambiguous MAC filters. Only ACL changes owned by MDM are removed when returning to both bands.
+            The RPC argument reader is forced to the jshn implementation under a new marker so an older marker cannot leave the broken jsonfilter implementation in place. Device names remain local: no client inventory or statistics are uploaded by the app.
+            The app does not change firewall rules, tc, mwan3, Tachyon, proxy routing, or DHCP reservations. mDNS and UFP are optional and are not installed/enabled by this installer.
+            CI validates the source bundle, shell syntax, patch markers and installer. Live validation on the target router is still required.

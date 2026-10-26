@@ -325,7 +325,7 @@ apply_rpc_arg_parser_patch() {
 
     # jsonfilter is not required by the app and may be absent on minimal images.
     # The same handler already loads OpenWrt's jshn library for JSON output.
-    if ! grep -Fq '# MDM_READ_ARG_JSHN_V2' "$backend_file"; then
+    if ! grep -Fq '# MDM_READ_ARG_JSHN_V3' "$backend_file"; then
         [ "$(grep -Fc 'read_arg() {' "$backend_file" || true)" = "1" ] ||
             die "Не удалось однозначно найти функцию чтения RPC-аргументов."
 
@@ -333,7 +333,7 @@ apply_rpc_arg_parser_patch() {
         cat > "$patch_file" <<'MDM_RPC_ARG_PATCH'
 function print_read_arg() {
     print "read_arg() {"
-    print "    # MDM_READ_ARG_JSHN_V2: read RPC fields through OpenWrt's bundled jshn."
+    print "    # MDM_READ_ARG_JSHN_V3: read RPC fields through OpenWrt's bundled jshn."
     print "    local arg value"
     print "    arg=\"$1\""
     print "    [ -n \"$input\" ] || return 0"
@@ -358,7 +358,7 @@ MDM_RPC_ARG_PATCH
 
         awk -f "$patch_file" "$backend_file" > "$tmp_dir/backend.rpc-args" ||
             die "Не удалось заменить функцию чтения RPC-аргументов."
-        grep -Fq '# MDM_READ_ARG_JSHN_V2' "$tmp_dir/backend.rpc-args" ||
+        grep -Fq '# MDM_READ_ARG_JSHN_V3' "$tmp_dir/backend.rpc-args" ||
             die "Новая функция чтения RPC-аргументов не найдена."
         sh -n "$tmp_dir/backend.rpc-args" ||
             die "RPC-обработчик после замены чтения аргументов не прошёл проверку синтаксиса."
@@ -1608,7 +1608,7 @@ MDM_BAND_SCHEMA
     }
 
     if (index($0, "E('p', { 'style': 'margin:12px 0 0' }") > 0) {
-        $0 = "\t\t\tE('p', { 'style': 'margin:12px 0 0' }, 'Для зарегистрированных устройств можно выбрать только 2,4 ГГц, только 5 ГГц или оба диапазона без ограничений со стороны My Device Manager. В режиме двух диапазонов выбор остаётся за клиентом.'),"
+        $0 = "\t\t\tE('p', { 'style': 'margin:12px 0 0' }, 'Для каждого обнаруженного устройства можно выбрать только 2,4 ГГц, только 5 ГГц или оба диапазона без ограничений со стороны My Device Manager. При выборе обоих диапазонов клиент сам решает, к какому подключаться.'),"
     }
 
     if (index($0, "Приложение не меняет firewall") > 0) {
@@ -1626,7 +1626,7 @@ MDM_BAND_SCHEMA
 
     if (index($0, "var actions = [registerButton];") > 0 && !select_added) {
         print
-        print "\t\t\tif (d.registered) {"
+        print "\t\t\tif (d.mac) {"
         print "\t\t\t\tvar savedBandMode = d.band_mode || 'auto';"
         print "\t\t\t\tvar bandSelect = E('select', { 'class': 'cbi-input-select mdm-band-select', 'aria-label': 'Диапазон Wi-Fi для ' + name }, ["
         print "\t\t\t\t\tE('option', { 'value': 'auto' }, '2,4 + 5 ГГц — выбор клиента (без ограничений MDM)'),"
@@ -2439,6 +2439,131 @@ MDM_DIAGNOSTIC_PANEL_PATCH
 }
 
 
+
+apply_simple_band_only_patch() {
+    local backend_file js_file backend_patch ui_patch
+
+    backend_file="$package_dir/root/usr/libexec/rpcd/luci.my_device_manager"
+    js_file="$package_dir/htdocs/luci-static/resources/view/my-device-manager/main.js"
+    [ -f "$backend_file" ] || die "Не найден RPC-обработчик для режима управления без регистрации."
+    [ -f "$js_file" ] || die "Не найден интерфейс для режима управления без регистрации."
+
+    # Create the device's internal record only when a band restriction is requested.
+    if ! grep -Fq '# MDM_BAND_ONLY_PROFILE_V1' "$backend_file"; then
+        [ "$(grep -Fc 'band_mode_apply_locked() {' "$backend_file" || true)" = "1" ] ||
+            die "Не найдена функция применения диапазона для режима без регистрации."
+        [ "$(grep -Fc '    section=$(section_for_mac "$mac")' "$backend_file" || true)" = "1" ] ||
+            die "Не найдено место для чтения предпочтения диапазона."
+        [ "$(grep -Fc '    band_remove_acl_entries "$section" "$mac" || {' "$backend_file" || true)" = "1" ] ||
+            die "Не найдено безопасное место для сохранения настройки диапазона."
+
+        backend_patch="$tmp_dir/band-only-backend.awk"
+        cat > "$backend_patch" <<'MDM_BAND_ONLY_BACKEND'
+function print_profile_lookup() {
+    print "    section=$(section_for_mac \"$mac\")"
+    print "    stored=$(uci -q get \"$PACKAGE.$section.mac\" 2>/dev/null || true)"
+    print "    new_record=0 # MDM_BAND_ONLY_PROFILE_V1"
+    print "    if [ \"$stored\" != \"$mac\" ]; then"
+    print "        # Auto means no restriction; do not create a record just for viewing."
+    print "        if [ \"$new_mode\" = \"auto\" ]; then return 0; fi"
+    print "        new_record=1"
+    print "        old_mode=auto"
+    print "    else"
+    print "        old_mode=$(uci -q get \"$PACKAGE.$section.band_mode\" 2>/dev/null || true)"
+    print "        [ -n \"$old_mode\" ] || old_mode=auto"
+    print "    fi"
+    print "    [ \"$old_mode\" != \"$new_mode\" ] || return 0"
+}
+$0 == "band_mode_apply_locked() {" { in_band=1; print; next }
+in_band && index($0, "local mac=") > 0 && index($0, "reload_needed") > 0 {
+    sub(/ reload_needed$/, " reload_needed new_record")
+    print
+    next
+}
+in_band && $0 == "    section=$(section_for_mac \"$mac\")" && !lookup_done {
+    print_profile_lookup()
+    lookup_done=1
+    skipping_lookup=1
+    next
+}
+skipping_lookup {
+    if ($0 == "    [ \"$old_mode\" != \"$new_mode\" ] || return 0") {
+        skipping_lookup=0
+    }
+    next
+}
+in_band && index($0, "    band_remove_acl_entries \"$section\" \"$mac\" || {") == 1 && !created_block {
+    print "    if [ \"$new_record\" = \"1\" ]; then"
+    print "        section=$(uci add \"$PACKAGE\" device 2>/dev/null) || {"
+    print "            band_transaction_rollback \"$tx_dir\" 0"
+    print "            BAND_ERROR=band_mode_apply_failed"
+    print "            return 1"
+    print "        }"
+    print "        uci set \"$PACKAGE.$section.mac=$mac\" >/dev/null 2>&1 || {"
+    print "            band_transaction_rollback \"$tx_dir\" 0"
+    print "            BAND_ERROR=band_mode_apply_failed"
+    print "            return 1"
+    print "        }"
+    print "    fi"
+    created_block=1
+}
+{ print }
+END {
+    if (!lookup_done || skipping_lookup || !created_block) exit 1
+}
+MDM_BAND_ONLY_BACKEND
+        awk -f "$backend_patch" "$backend_file" > "$tmp_dir/backend.band-only" ||
+            die "Не удалось убрать обязательную регистрацию перед выбором диапазона Wi-Fi."
+        grep -Fq '# MDM_BAND_ONLY_PROFILE_V1' "$tmp_dir/backend.band-only" ||
+            die "Автоматическое сохранение предпочтения диапазона не обнаружено."
+        sh -n "$tmp_dir/backend.band-only" ||
+            die "RPC-обработчик управления без регистрации не прошёл проверку синтаксиса."
+        mv "$tmp_dir/backend.band-only" "$backend_file" ||
+            die "Не удалось сохранить обработчик управления без регистрации."
+    fi
+
+    # The list still comes from DHCP/mDNS/neighbour and hostapd; do not require
+    # a user-facing registration or a separate DHCP-registration action.
+    if ! grep -Fq '# MDM_SIMPLE_BAND_ONLY_UI_V1' "$js_file"; then
+        ui_patch="$tmp_dir/band-only-ui.awk"
+        cat > "$ui_patch" <<'MDM_BAND_ONLY_UI'
+{
+    if (index($0, "var actions = [registerButton];") > 0) {
+        sub(/var actions = \[registerButton\];/, "var actions = []; // MDM_SIMPLE_BAND_ONLY_UI_V1")
+        actions_hidden=1
+    }
+    if (index($0, "if (d.registered && d.ip && !hasDhcpReservation) {") > 0) {
+        sub(/if \(d\.registered && d\.ip && !hasDhcpReservation\) \{/, "if (false && d.registered && d.ip && !hasDhcpReservation) {")
+        dhcp_button_hidden=1
+    }
+    print
+}
+END {
+    if (!actions_hidden || !dhcp_button_hidden) exit 1
+}
+MDM_BAND_ONLY_UI
+        awk -f "$ui_patch" "$js_file" > "$tmp_dir/main.band-only.js" ||
+            die "Не удалось убрать кнопки регистрации устройства и DHCP."
+        grep -Fq 'var actions = []; // MDM_SIMPLE_BAND_ONLY_UI_V1' "$tmp_dir/main.band-only.js" ||
+            die "Кнопка регистрации осталась в интерфейсе."
+        grep -Fq 'if (false && d.registered && d.ip && !hasDhcpReservation)' "$tmp_dir/main.band-only.js" ||
+            die "Кнопка регистрации DHCP осталась активной."
+        grep -Fq 'if (d.mac) {' "$tmp_dir/main.band-only.js" ||
+            die "Выбор диапазона не подключён к обнаруженным устройствам."
+        grep -Fq 'Устройство не зарегистрировано' "$tmp_dir/main.band-only.js" ||
+            die "Не найдена пометка устройства без сохранённого профиля."
+        if command -v node >/dev/null 2>&1; then
+            node --check "$tmp_dir/main.band-only.js" ||
+                die "Интерфейс управления без регистрации не прошёл проверку JavaScript."
+        fi
+        mv "$tmp_dir/main.band-only.js" "$js_file" ||
+            die "Не удалось сохранить интерфейс управления без регистрации."
+    fi
+
+    sh -n "$backend_file" ||
+        die "Итоговый RPC-обработчик не прошёл проверку shell-синтаксиса."
+}
+
 validate_payload() {
     [ -d "$package_dir" ] || die "В архиве отсутствует каталог приложения."
     [ -f "$package_dir/root/usr/share/luci/menu.d/luci-app-my-device-manager.json" ] ||
@@ -2465,6 +2590,7 @@ do_check() {
     apply_band_selection_patch
     apply_two_level_registration_patch
     apply_diagnostics_logging_patch
+    apply_simple_band_only_patch
     validate_payload
     grep -Fq '# MDM_DIAGNOSTIC_DEFAULT_ON' "$0" ||
         die "Установщик не включает режим отладки при установке."
@@ -2480,7 +2606,7 @@ do_check() {
        is_mdm_managed_file /etc/config/firewall; then
         die "Проверка списка файлов переустановки включает пользовательскую конфигурацию."
     fi
-    log "Проверка успешна: архив, регистрация MAC, DHCP/mDNS, UFP, статистика Wi-Fi, выбор диапазона, отметка незарегистрированных устройств, диагностика и полная переустановка корректны."
+    log "Проверка успешна: архив, DHCP/mDNS, UFP, статистика Wi-Fi, выбор диапазона без регистрации, отметка устройств без профиля, диагностика и переустановка корректны."
 }
 
 is_mdm_managed_file() {
@@ -2561,6 +2687,7 @@ do_install() {
     apply_band_selection_patch
     apply_two_level_registration_patch
     apply_diagnostics_logging_patch
+    apply_simple_band_only_patch
     validate_payload
 
     mkdir -p "$STATE_DIR"
