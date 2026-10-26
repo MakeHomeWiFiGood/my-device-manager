@@ -35,17 +35,6 @@ jobs:
           test -f "$RUNNER_TEMP/mdm-source/luci-app-my-device-manager/root/usr/share/luci/menu.d/luci-app-my-device-manager.json"
           test -f "$RUNNER_TEMP/mdm-source/luci-app-my-device-manager/root/usr/share/rpcd/acl.d/luci-app-my-device-manager.json"
 
-          # TEMPORARY DEBUG: expose source RPC declaration/action wiring to CI logs.
-          JS="$RUNNER_TEMP/mdm-source/luci-app-my-device-manager/htdocs/luci-static/resources/view/my-device-manager/main.js"
-          BACKEND="$RUNNER_TEMP/mdm-source/luci-app-my-device-manager/root/usr/libexec/rpcd/luci.my_device_manager"
-          printf '\n=== SOURCE JS: register / set_band_mode argument wiring ===\n'
-          grep -n -E -B 5 -A 8 "callRegister|registerButton|method: ['\"]register|callSetBandMode|set_band_mode|rpc\.declare" "$JS" | head -n 220 || true
-          printf '\n=== SOURCE BACKEND: register dispatch and argument parsing ===\n'
-          grep -n -E -B 5 -A 12 "read_arg\(\)|register\|rename\)|set_band_mode\)|mac_valid|name_required" "$BACKEND" | head -n 220 || true
-          printf '\\n=== SOURCE BACKEND ENTRYPOINT AND RPC SCHEMA ===\\n'
-          sed -n '630,710p' "$BACKEND"
-          grep -n -E -B 2 -A 3 '"register"|"rename"|"unregister"' "$BACKEND" | tail -n 60 || true
-
 
       - name: Validate installer and prepare download artifact
         shell: bash
@@ -64,10 +53,10 @@ jobs:
           cp install.sh artifacts/install.sh
           sha256sum artifacts/install.sh > artifacts/install.sh.sha256
           cat > artifacts/INSTALL.txt <<'EOF'
-          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.24)
+          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.25)
           
           Run as root:
-            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.24/install.sh
+            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.25/install.sh
             sh /root/mdm-install.sh check
             sh /root/mdm-install.sh reinstall
           
@@ -86,13 +75,13 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish My Device Manager v0.2.24 — safe full reinstall and device controls
+      - name: Publish My Device Manager v0.2.25 — safe full reinstall and device controls
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.2.24
+          tag_name: v0.2.25
           target_commitish: ${{ github.sha }}
-          name: My Device Manager v0.2.24 — safe full reinstall and device controls
+          name: My Device Manager v0.2.25 — safe full reinstall and device controls
           overwrite_files: true
           generate_release_notes: true
           files: artifacts/*
@@ -127,5 +116,6 @@ jobs:
             Also includes the earlier fixes: executable rpcd handler, mDNS discovery,
             optional UFP fingerprints, Wi-Fi link telemetry, and independent parsing
             of Wi-Fi counters. UFP is not installed by this installer.
+            Fixes missing RPC parameters during registration and band selection by reading request fields with OpenWrt's bundled jshn instead of relying on jsonfilter. The installer includes a regression test for MAC, name and band_mode parsing. The router still needs a live check after update.
             CI checks the source bundle, installer patch paths and shell syntax;
             live validation on the target router remains pending.
