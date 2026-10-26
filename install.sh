@@ -325,7 +325,7 @@ apply_rpc_arg_parser_patch() {
 
     # jsonfilter is not required by the app and may be absent on minimal images.
     # The same handler already loads OpenWrt's jshn library for JSON output.
-    if ! grep -Fq '# MDM_READ_ARG_JSHN_V1' "$backend_file"; then
+    if ! grep -Fq '# MDM_READ_ARG_JSHN_V2' "$backend_file"; then
         [ "$(grep -Fc 'read_arg() {' "$backend_file" || true)" = "1" ] ||
             die "Не удалось однозначно найти функцию чтения RPC-аргументов."
 
@@ -333,12 +333,12 @@ apply_rpc_arg_parser_patch() {
         cat > "$patch_file" <<'MDM_RPC_ARG_PATCH'
 function print_read_arg() {
     print "read_arg() {"
-    print "    # MDM_READ_ARG_JSHN_V1: read RPC fields through OpenWrt's bundled jshn."
+    print "    # MDM_READ_ARG_JSHN_V2: read RPC fields through OpenWrt's bundled jshn."
     print "    local arg value"
     print "    arg=\"$1\""
     print "    [ -n \"$input\" ] || return 0"
     print "    json_load \"$input\" 2>/dev/null || return 0"
-    print "    json_get_var value \"$arg\""
+    print "    json_get_var value \"$arg\" \"\""
     print "    printf '%s' \"$value\""
     print "}"
 }
@@ -358,7 +358,7 @@ MDM_RPC_ARG_PATCH
 
         awk -f "$patch_file" "$backend_file" > "$tmp_dir/backend.rpc-args" ||
             die "Не удалось заменить функцию чтения RPC-аргументов."
-        grep -Fq '# MDM_READ_ARG_JSHN_V1' "$tmp_dir/backend.rpc-args" ||
+        grep -Fq '# MDM_READ_ARG_JSHN_V2' "$tmp_dir/backend.rpc-args" ||
             die "Новая функция чтения RPC-аргументов не найдена."
         sh -n "$tmp_dir/backend.rpc-args" ||
             die "RPC-обработчик после замены чтения аргументов не прошёл проверку синтаксиса."
@@ -368,7 +368,7 @@ MDM_RPC_ARG_PATCH
 
     test_file="$tmp_dir/rpc-read-arg-test.sh"
     sed -n '/^read_arg() {/,/^}/p' "$backend_file" > "$test_file"
-    grep -Fq '# MDM_READ_ARG_JSHN_V1' "$test_file" ||
+    grep -Fq '# MDM_READ_ARG_JSHN_V2' "$test_file" ||
         die "Не удалось подготовить тест чтения RPC-аргументов."
 
     (
