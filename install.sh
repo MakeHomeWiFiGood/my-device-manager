@@ -1688,8 +1688,7 @@ apply_two_level_registration_patch() {
     [ -f "$js_file" ] || die "Не найден интерфейс для двухуровневой регистрации."
     [ -f "$acl_file" ] || die "Не найден ACL rpcd для DHCP-регистрации."
 
-    # The ordinary Register action stores only the My Device Manager record.
-    # Skip the fragile format validator for registry-only registration; DHCP retains its own checks.
+    # Registry-only registration still validates the canonical MAC, but does not edit DHCP.
     if ! grep -Fq '# MDM_TWO_LEVEL_LOCAL_REGISTER' "$backend_file"; then
         local_patch="$tmp_dir/registration-local.awk"
         cat > "$local_patch" <<'MDM_LOCAL_REGISTER'
@@ -1699,7 +1698,6 @@ apply_two_level_registration_patch() {
     if (in_register && index($0, "requested_ip=$(read_arg ip)") > 0 && !added) {
         print "                if [ \"$method\" = \"register\" ]; then"
         print "                    requested_ip=\"\""
-        print "                    mac_valid() { return 0; } # MDM_REGISTRY_SKIP_MAC_VALIDATOR"
         print "                fi # MDM_TWO_LEVEL_LOCAL_REGISTER"
         added = 1
     }
@@ -1978,8 +1976,11 @@ MDM_DHCP_REGISTER_UI
 
     grep -Fq '# MDM_TWO_LEVEL_LOCAL_REGISTER' "$backend_file" ||
         die "Обычная регистрация не отделена от DHCP."
-    grep -Fq 'mac_valid() { return 0; } # MDM_REGISTRY_SKIP_MAC_VALIDATOR' "$backend_file" ||
-        die "Регистрация в реестре всё ещё зависит от строгого валидатора MAC."
+    if grep -Fq 'MDM_REGISTRY_SKIP_MAC_VALIDATOR' "$backend_file"; then
+        die "Обнаружен обход проверки MAC-адреса; регистрация должна использовать общую проверку."
+    fi
+    grep -Fq 'requested_ip=""' "$backend_file" ||
+        die "Обычная регистрация должна быть отделена от создания DHCP-резервации."
     grep -Fq 'register_dhcp_locked() {' "$backend_file" ||
         die "Отдельная функция DHCP-регистрации отсутствует."
     grep -Fq 'register_dhcp)' "$backend_file" ||
@@ -1994,6 +1995,173 @@ MDM_DHCP_REGISTER_UI
         die "RPC-обработчик двухуровневой регистрации не прошёл проверку shell-синтаксиса."
     chmod 0755 "$backend_file" ||
         die "Не удалось выставить исполняемые права RPC-обработчика."
+}
+
+
+
+
+apply_registration_choice_ui_patch() {
+    local js_file helper_file ui_patch
+
+    js_file="$package_dir/htdocs/luci-static/resources/view/my-device-manager/main.js"
+    [ -f "$js_file" ] || die "Не найден интерфейс для выбора способа регистрации."
+    grep -Fq 'var callRegisterDhcp = rpc.declare({' "$js_file" ||
+        die "RPC создания DHCP-резервации не найден; выбор способа регистрации не подключён."
+
+    if ! grep -Fq 'function registerWithChoice(mac, name, suggestedIp)' "$js_file"; then
+        [ "$(grep -Fc 'function refreshAfter(promise) {' "$js_file" || true)" = "1" ] ||
+            die "Не найден обработчик обновления после регистрации."
+        grep -Fq "var ip = window.prompt('IPv4 для постоянной DHCP-резервации', '');" "$js_file" ||
+            die "Не найдена форма ручного добавления для обновления."
+        grep -Fq "var ip = window.prompt('IPv4 для постоянной DHCP-резервации', d.ip || '');" "$js_file" ||
+            die "Не найдена форма регистрации обнаруженного устройства для обновления."
+
+        helper_file="$tmp_dir/register-choice-helper.js"
+        cat > "$helper_file" <<'MDM_REGISTRATION_CHOICE_HELPER'
+        function registerWithChoice(mac, name, suggestedIp) {
+            var canonicalMac = String(mac || '').trim();
+            var createDhcp = window.confirm(
+                'Выбери способ регистрации:\\n\\n' +
+                'ОК — зарегистрировать в My Device Manager и создать DHCP-резервацию.\\n' +
+                'Отмена — зарегистрировать только в My Device Manager. Уже существующие DHCP-записи не изменяются.'
+            );
+
+            if (!createDhcp)
+                return refreshAfter(callRegister(canonicalMac, name, ''));
+
+            var ip = window.prompt('IPv4 для постоянной DHCP-резервации', String(suggestedIp || '').trim());
+            if (ip === null)
+                return;
+            ip = ip.trim();
+            if (!ip) {
+                ui.addNotification(null, E('p', {}, 'Для DHCP-резервации нужно указать IPv4-адрес. Устройство не потеряно: DHCP-регистрацию можно выполнить позже.'), 'error');
+                return;
+            }
+
+            var registeredLocally = false;
+            return callRegister(canonicalMac, name, '').then(function(localResult) {
+                if (localResult && localResult.ok === false)
+                    return localResult;
+
+                registeredLocally = true;
+                return callRegisterDhcp(canonicalMac, ip, name);
+            }).then(function(result) {
+                if (result && result.ok === false) {
+                    var message = operationErrorMessage(result.error);
+                    if (registeredLocally) {
+                        message = 'Устройство добавлено в My Device Manager, но DHCP-резервация не создана. ' + message;
+                        ui.addNotification(null, E('p', {}, message), 'error');
+                        window.setTimeout(function() { window.location.reload(); }, 1800);
+                    }
+                    else {
+                        ui.addNotification(null, E('p', {}, message), 'error');
+                    }
+                    return;
+                }
+
+                window.location.reload();
+            }).catch(function(err) {
+                var message = rpcErrorMessage(err);
+                if (registeredLocally) {
+                    message = 'Устройство добавлено в My Device Manager, но DHCP-регистрация не завершена. ' + message;
+                    window.setTimeout(function() { window.location.reload(); }, 1800);
+                }
+                ui.addNotification(null, E('p', {}, message), 'error');
+            });
+        }
+MDM_REGISTRATION_CHOICE_HELPER
+
+        ui_patch="$tmp_dir/registration-choice-ui.awk"
+        cat > "$ui_patch" <<'MDM_REGISTRATION_CHOICE_UI'
+BEGIN {
+    while ((getline helper_line < helper_file) > 0)
+        helper[++helper_count] = helper_line
+    close(helper_file)
+}
+{
+    if (skip_next > 0) {
+        skip_next--
+        next
+    }
+
+    if (!helper_added && $0 == "\t\tfunction refreshAfter(promise) {") {
+        for (i = 1; i <= helper_count; i++)
+            print helper[i]
+        print ""
+        helper_added = 1
+    }
+
+    if (index($0, "var ip = window.prompt('IPv4 для постоянной DHCP-резервации', '');") > 0) {
+        print "\t\t\treturn registerWithChoice(mac.trim(), name, '');"
+        skip_next = 2
+        manual_replaced = 1
+        next
+    }
+
+    if (index($0, "var ip = window.prompt('IPv4 для постоянной DHCP-резервации', d.ip || '');") > 0) {
+        print "\t\t\t\treturn registerWithChoice(d.mac, newName, d.ip || '');"
+        skip_next = 2
+        row_replaced = 1
+        next
+    }
+
+    if (index($0, "var newName = window.prompt('Имя для регистрации (будет сохранено в реестре и DHCP)'") > 0)
+        sub(/Имя для регистрации \(будет сохранено в реестре и DHCP\)/, "Имя для регистрации в My Device Manager")
+
+    if (index($0, "Регистрация закрепляет IPv4 за MAC через штатный DHCP OpenWrt") > 0) {
+        $0 = "\t\t\tE('p', { 'style': 'margin:12px 0 0' }, 'Устройство можно зарегистрировать только в My Device Manager или вместе со статической DHCP-резервацией. Существующая DHCP-запись не дублируется. Диапазон Wi-Fi настраивается отдельно для зарегистрированного устройства.'),"
+    }
+
+    if (index($0, "var status = (d.online === true") > 0) {
+        print "\t\t\tvar isOnline = d.online === true || d.online === 1;"
+        print "\t\t\tvar hasDhcpReservation = !!d.dhcp_reserved || /^(managed|adopted)$/i.test(String(d.dhcp_mode || ''));"
+        print "\t\t\tvar status = !d.registered ? 'Устройство не зарегистрировано' : (hasDhcpReservation ? 'My Device Manager + DHCP' : 'Только My Device Manager');"
+        print "\t\t\tvar networkStatus = isOnline ? 'Сейчас в сети' : (d.ip ? 'Сейчас не обнаружено · IP известен' : 'Не в сети');"
+        status_replaced = 1
+        next
+    }
+
+    if (index($0, "E('td', {}, [E('span', { 'class': statusClass }, status), !d.registered ?") > 0) {
+        print "\t\t\t\tE('td', {}, [E('span', { 'class': statusClass }, status), E('div', { 'class': 'mdm-muted' }, networkStatus)]),"
+        status_cell_replaced = 1
+        next
+    }
+
+    print
+}
+END {
+    if (!helper_added || !manual_replaced || !row_replaced || !status_replaced || !status_cell_replaced)
+        exit 1
+}
+MDM_REGISTRATION_CHOICE_UI
+
+        awk -v helper_file="$helper_file" -f "$ui_patch" "$js_file" > "$tmp_dir/main.registration-choice.js" ||
+            die "Не удалось обновить интерфейс способа регистрации и состояний устройств."
+        grep -Fq 'function registerWithChoice(mac, name, suggestedIp)' "$tmp_dir/main.registration-choice.js" ||
+            die "Функция выбора способа регистрации не найдена."
+        grep -Fq 'callRegisterDhcp(canonicalMac, ip, name)' "$tmp_dir/main.registration-choice.js" ||
+            die "Создание DHCP-резервации не подключено к выбору способа регистрации."
+        grep -Fq 'Устройство не зарегистрировано' "$tmp_dir/main.registration-choice.js" ||
+            die "В интерфейсе отсутствует состояние незарегистрированного устройства."
+        grep -Fq 'My Device Manager + DHCP' "$tmp_dir/main.registration-choice.js" ||
+            die "Не добавлено состояние устройства с DHCP-резервацией."
+        grep -Fq 'Только My Device Manager' "$tmp_dir/main.registration-choice.js" ||
+            die "Не добавлено состояние устройства без DHCP-резервации."
+        if grep -Fq "var ip = window.prompt('IPv4 для постоянной DHCP-резервации', '');" "$tmp_dir/main.registration-choice.js" ||
+           grep -Fq "var ip = window.prompt('IPv4 для постоянной DHCP-резервации', d.ip || '');" "$tmp_dir/main.registration-choice.js"; then
+            die "В форме регистрации остался обязательный ввод IP до выбора способа регистрации."
+        fi
+        if command -v node >/dev/null 2>&1; then
+            node --check "$tmp_dir/main.registration-choice.js" ||
+                die "Интерфейс выбора способа регистрации не прошёл проверку JavaScript."
+        fi
+        mv "$tmp_dir/main.registration-choice.js" "$js_file" ||
+            die "Не удалось сохранить интерфейс выбора способа регистрации."
+    fi
+
+    grep -Fq 'function registerWithChoice(mac, name, suggestedIp)' "$js_file" ||
+        die "Выбор способа регистрации отсутствует в интерфейсе."
+    sh -n "$backend_file" 2>/dev/null || true
 }
 
 
@@ -2351,6 +2519,7 @@ do_check() {
     apply_wifi_client_stats_patch
     apply_band_selection_patch
     apply_two_level_registration_patch
+    apply_registration_choice_ui_patch
     apply_diagnostics_logging_patch
     validate_payload
     log "Проверка успешна: архив, DHCP/mDNS, UFP, статистика Wi-Fi, выбор диапазона, отметка незарегистрированных устройств и диагностический журнал корректны."
