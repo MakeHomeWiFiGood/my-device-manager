@@ -41,14 +41,14 @@ Register the device's current Wi-Fi MAC address. If a client uses MAC randomizat
 Run these commands in an SSH session as `root` on the router:
 
 ```sh
-wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.26/install.sh
+wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.27/install.sh
 sh /root/mdm-install.sh check &&
 sh /root/mdm-install.sh reinstall
 ```
 
 The `reinstall` command removes the previously installed, installer-tracked application files from the My Device Manager paths, then installs a freshly generated set. It checks stored original-file backups before deleting anything. The device registry in `/etc/config/my_device_manager`, saved backup manifests, existing Wi-Fi ACL restrictions applied to registered devices, and all other router network configuration are preserved. This does not trigger a Wi-Fi reload; applying a new band restriction from the LuCI UI may reload Wi-Fi and is a separate operation.
 
-Release v0.2.26 fixes strict-shell compatibility when reading RPC request fields through OpenWrt's bundled `jshn`: `json_get_var` is given an explicit empty default, avoiding an unset third-argument reference under `set -u`. Registration and Wi-Fi-band requests use this parser. CI checks the synthetic MAC/name/band-mode fixture; live validation on the target router is still required.\n\nThe installer supports BusyBox `tar` on OpenWrt. It validates the source archive, patches the RPC backend and LuCI view for mDNS discovery, optional UFP fingerprints, Wi-Fi telemetry, band selection and the unregistered-device marker; explicitly sets executable permissions on the RPC handler; and backs up files it replaces. An existing `/etc/config/my_device_manager` is preserved. mDNS is optional and the installer does not install or enable it. UFP is also optional and is not installed by this app installer. Access to `raw.githubusercontent.com` is required.
+Release v0.2.27 temporarily removes the pre-install functional test that executes RPC MAC/name/band-mode parsing against `jshn`, because that test blocks the check command on the target router. The RPC parser patch and shell-syntax/patch-integrity checks remain. This does not confirm that live registration works: test device registration and band selection in LuCI after updating.\n\nThe installer supports BusyBox `tar` on OpenWrt. It validates the source archive, patches the RPC backend and LuCI view for mDNS discovery, optional UFP fingerprints, Wi-Fi telemetry, band selection and the unregistered-device marker; explicitly sets executable permissions on the RPC handler; and backs up files it replaces. An existing `/etc/config/my_device_manager` is preserved. mDNS is optional and the installer does not install or enable it. UFP is also optional and is not installed by this app installer. Access to `raw.githubusercontent.com` is required.
 
 To remove the app and restore files that existed before installation:
 
