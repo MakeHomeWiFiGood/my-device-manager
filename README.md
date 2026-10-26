@@ -31,7 +31,7 @@ Register the device's current Wi-Fi MAC address. If a client uses MAC randomizat
 Run these commands in an SSH session as `root` on the router:
 
 ```sh
-wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.19/install.sh
+wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.20/install.sh
 sh /root/mdm-install.sh check
 sh /root/mdm-install.sh install
 ```
