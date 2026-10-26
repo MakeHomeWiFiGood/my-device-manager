@@ -24,14 +24,14 @@ Registered devices have a selector with three modes:
 
 Applying a restriction updates the relevant `wireless` UCI settings and can briefly reload Wi-Fi, interrupting clients. Before applying a restriction, MDM checks that each denied-band AP has an AP on the permitted band with the same SSID, encryption mode and key, so the client has a compatible network to rejoin. If that check fails, or if the existing Wi-Fi ACL uses an allow-list or a conflicting dormant MAC list, the operation is refused instead of silently overwriting the policy. MDM tracks the entries and filter settings it creates; switching back to both bands, unregistering a device, or uninstalling the app removes only MDM-owned restrictions where they are still identifiable.
 
-Register the device's current Wi-Fi MAC address. If a client uses MAC randomization and changes its address, it may need to be registered again. Before registration, MAC input is normalized to a canonical lowercase colon-separated value; common colon, hyphen, dotted, compact, upper/lowercase and whitespace variants are accepted. Band selection is a Wi-Fi admission restriction, not a guarantee that a client will prefer a particular band while both are enabled.
+Register the device's current Wi-Fi MAC address. If a client uses MAC randomization and changes its address, it may need to be registered again. Before registration, MAC input is normalized to a canonical lowercase colon-separated value; common colon, hyphen, dotted, compact, upper/lowercase and whitespace variants are accepted. The installer force-replaces older normalizer implementations and reports the exact failed normalization test if validation fails. Band selection is a Wi-Fi admission restriction, not a guarantee that a client will prefer a particular band while both are enabled.
 
 ## Install or update
 
 Run these commands in an SSH session as `root` on the router:
 
 ```sh
-wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.18/install.sh
+wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.19/install.sh
 sh /root/mdm-install.sh check
 sh /root/mdm-install.sh install
 ```
