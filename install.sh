@@ -1997,6 +1997,334 @@ MDM_DHCP_REGISTER_UI
 }
 
 
+
+apply_diagnostics_logging_patch() {
+    local backend_file js_file acl_file helper_file dispatch_patch schema_patch acl_patch ui_decl_patch ui_panel ui_panel_patch request_patch error_patch
+
+    backend_file="$package_dir/root/usr/libexec/rpcd/luci.my_device_manager"
+    js_file="$package_dir/htdocs/luci-static/resources/view/my-device-manager/main.js"
+    acl_file="$package_dir/root/usr/share/rpcd/acl.d/luci-app-my-device-manager.json"
+    [ -f "$backend_file" ] || die "Не найден RPC-обработчик для диагностического журнала."
+    [ -f "$js_file" ] || die "Не найден интерфейс для диагностического журнала."
+    [ -f "$acl_file" ] || die "Не найден ACL rpcd для диагностического журнала."
+
+    # Log files are RAM-only. Logging is off by default and never captures Wi-Fi keys.
+    if ! grep -Fq 'MDM_DIAGNOSTIC_LOG_HELPERS' "$backend_file"; then
+        helper_file="$tmp_dir/diagnostic-log-helpers.sh"
+        cat > "$helper_file" <<'MDM_DIAGNOSTIC_LOG_HELPERS'
+# MDM_DIAGNOSTIC_LOG_HELPERS
+MDM_LOG_ENABLE_FILE=/tmp/my-device-manager-logging.enabled
+MDM_LOG_FILE=/tmp/my-device-manager.log
+
+mdm_logging_enabled() {
+    [ "$(cat "$MDM_LOG_ENABLE_FILE" 2>/dev/null)" = "1" ]
+}
+
+mdm_debug_log() {
+    mdm_logging_enabled || return 0
+    local timestamp message size
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || printf 'unknown-time')
+    message=$(printf '%s' "$*" | tr '\r\n' '  ' | cut -c1-240)
+    size=$(wc -c < "$MDM_LOG_FILE" 2>/dev/null || printf '0')
+    case "$size" in ''|*[!0-9]*) size=0 ;; esac
+    if [ "$size" -gt 32768 ]; then
+        tail -n 120 "$MDM_LOG_FILE" > "$MDM_LOG_FILE.tmp" 2>/dev/null &&
+            mv "$MDM_LOG_FILE.tmp" "$MDM_LOG_FILE"
+    fi
+    printf '[%s] %s\n' "$timestamp" "$message" >> "$MDM_LOG_FILE"
+    chmod 600 "$MDM_LOG_FILE" 2>/dev/null || true
+}
+
+mdm_logging_set() {
+    case "$1" in
+        1)
+            umask 077
+            printf '1\n' > "$MDM_LOG_ENABLE_FILE" || return 1
+            : > "$MDM_LOG_FILE" || return 1
+            chmod 600 "$MDM_LOG_ENABLE_FILE" "$MDM_LOG_FILE" 2>/dev/null || true
+            mdm_debug_log "diagnostic logging enabled"
+            ;;
+        0)
+            mdm_debug_log "diagnostic logging disabled"
+            rm -f "$MDM_LOG_ENABLE_FILE"
+            ;;
+        *) return 1 ;;
+    esac
+}
+MDM_DIAGNOSTIC_LOG_HELPERS
+
+        awk -v helper_file="$helper_file" '
+            BEGIN {
+                while ((getline line < helper_file) > 0) helper[++count] = line
+                close(helper_file)
+            }
+            $0 == "list_devices() {" && !inserted {
+                for (i = 1; i <= count; i++) print helper[i]
+                inserted = 1
+            }
+            { print }
+            END { if (!inserted) exit 1 }
+        ' "$backend_file" > "$tmp_dir/backend.logging-helpers" ||
+            die "Не удалось добавить функции диагностического журнала."
+        grep -Fq 'MDM_DIAGNOSTIC_LOG_HELPERS' "$tmp_dir/backend.logging-helpers" ||
+            die "Функции диагностического журнала не обнаружены."
+        mv "$tmp_dir/backend.logging-helpers" "$backend_file" ||
+            die "Не удалось сохранить функции диагностического журнала."
+    fi
+
+    # Record the normalized MAC before the registry operation. Never log names,
+    # IP addresses, Wi-Fi credentials or other arbitrary client-provided text.
+    if ! grep -Fq 'MDM_DIAGNOSTIC_REGISTER_LOG' "$backend_file"; then
+        request_patch="$tmp_dir/diagnostic-register.awk"
+        cat > "$request_patch" <<'MDM_DIAGNOSTIC_REGISTER'
+index($0, "mac=$(mac_normalize \"$mac\") # MDM_LOCAL_REGISTER_MAC_CANONICAL") > 0 && !added {
+    print
+    print "                mdm_debug_log \"registration request method=${method:-unknown} mac=${mac:-unknown}\" # MDM_DIAGNOSTIC_REGISTER_LOG"
+    added = 1
+    next
+}
+{ print }
+END { if (!added) exit 1 }
+MDM_DIAGNOSTIC_REGISTER
+        awk -f "$request_patch" "$backend_file" > "$tmp_dir/backend.logging-register" ||
+            die "Не удалось добавить журналирование попыток регистрации."
+        grep -Fq 'MDM_DIAGNOSTIC_REGISTER_LOG' "$tmp_dir/backend.logging-register" ||
+            die "Журналирование попыток регистрации не обнаружено."
+        mv "$tmp_dir/backend.logging-register" "$backend_file" ||
+            die "Не удалось сохранить журналирование попыток регистрации."
+    fi
+
+    # Log returned backend error codes to distinguish MAC validation, UCI and
+    # registration failures. Error messages are internal codes, not user text.
+    if ! grep -Fq 'MDM_DIAGNOSTIC_ERROR_LOG' "$backend_file"; then
+        error_patch="$tmp_dir/diagnostic-error.awk"
+        cat > "$error_patch" <<'MDM_DIAGNOSTIC_ERROR'
+/^emit_error\(\) \{$/ && !added {
+    print
+    print "    mdm_debug_log \"rpc-error method=${method:-unknown} code=${1:-unknown}\" # MDM_DIAGNOSTIC_ERROR_LOG"
+    added = 1
+    next
+}
+{ print }
+END { if (!added) exit 1 }
+MDM_DIAGNOSTIC_ERROR
+        awk -f "$error_patch" "$backend_file" > "$tmp_dir/backend.logging-error" ||
+            die "Не удалось добавить журналирование ошибок RPC."
+        grep -Fq 'MDM_DIAGNOSTIC_ERROR_LOG' "$tmp_dir/backend.logging-error" ||
+            die "Журналирование ошибок RPC не обнаружено."
+        mv "$tmp_dir/backend.logging-error" "$backend_file" ||
+            die "Не удалось сохранить журналирование ошибок RPC."
+    fi
+
+    if ! grep -Fq '            get_logging)' "$backend_file"; then
+        dispatch_patch="$tmp_dir/diagnostic-dispatch.awk"
+        cat > "$dispatch_patch" <<'MDM_DIAGNOSTIC_DISPATCH'
+{
+    if ($0 == "            set_band_mode)") {
+        print "            get_logging)"
+        print "                if mdm_logging_enabled; then"
+        print "                    printf '{\"ok\":true,\"enabled\":true}\\n'"
+        print "                else"
+        print "                    printf '{\"ok\":true,\"enabled\":false}\\n'"
+        print "                fi"
+        print "                ;;"
+        print "            set_logging)"
+        print "                mdm_logging_value=$(read_arg enabled)"
+        print "                case \"$mdm_logging_value\" in"
+        print "                    1|0)"
+        print "                        if mdm_logging_set \"$mdm_logging_value\"; then"
+        print "                            if [ \"$mdm_logging_value\" = \"1\" ]; then"
+        print "                                printf '{\"ok\":true,\"enabled\":true}\\n'"
+        print "                            else"
+        print "                                printf '{\"ok\":true,\"enabled\":false}\\n'"
+        print "                            fi"
+        print "                        else"
+        print "                            emit_error 'logging_update_failed'"
+        print "                        fi"
+        print "                        ;;"
+        print "                    *) emit_error 'logging_value_invalid' ;;"
+        print "                esac"
+        print "                ;;"
+        print
+    }
+    print
+}
+MDM_DIAGNOSTIC_DISPATCH
+        awk -f "$dispatch_patch" "$backend_file" > "$tmp_dir/backend.logging-dispatch" ||
+            die "Не удалось добавить RPC-переключатель диагностического журнала."
+        grep -Fq '            get_logging)' "$tmp_dir/backend.logging-dispatch" ||
+            die "RPC-метод чтения состояния журнала отсутствует."
+        grep -Fq '            set_logging)' "$tmp_dir/backend.logging-dispatch" ||
+            die "RPC-метод переключения журнала отсутствует."
+        mv "$tmp_dir/backend.logging-dispatch" "$backend_file" ||
+            die "Не удалось сохранить RPC-методы диагностического журнала."
+    fi
+
+    if ! grep -Fq '"set_logging":{"enabled":"str"}' "$backend_file"; then
+        schema_patch="$tmp_dir/diagnostic-schema.awk"
+        cat > "$schema_patch" <<'MDM_DIAGNOSTIC_SCHEMA'
+{
+    old = "\"register_dhcp\":{\"mac\":\"str\",\"ip\":\"str\",\"name\":\"str\"}"
+    new = old ",\"get_logging\":{},\"set_logging\":{\"enabled\":\"str\"}"
+    if (index($0, old) > 0 && index($0, "\"set_logging\"") == 0) {
+        sub(old, new)
+        changed = 1
+    }
+    print
+}
+END { if (!changed) exit 1 }
+MDM_DIAGNOSTIC_SCHEMA
+        awk -f "$schema_patch" "$backend_file" > "$tmp_dir/backend.logging-schema" ||
+            die "Не удалось расширить схему RPC для диагностического журнала."
+        grep -Fq '"set_logging":{"enabled":"str"}' "$tmp_dir/backend.logging-schema" ||
+            die "Схема RPC не содержит метода переключения журнала."
+        mv "$tmp_dir/backend.logging-schema" "$backend_file" ||
+            die "Не удалось сохранить схему RPC для диагностического журнала."
+    fi
+
+    if ! grep -Fq '"get_logging"' "$acl_file"; then
+        acl_patch="$tmp_dir/diagnostic-acl.awk"
+        cat > "$acl_patch" <<'MDM_DIAGNOSTIC_ACL'
+{
+    if (index($0, "\"register_dhcp\"") > 0 && index($0, "\"get_logging\"") == 0)
+        sub("\"register_dhcp\"", "\"register_dhcp\", \"get_logging\", \"set_logging\"")
+    print
+}
+MDM_DIAGNOSTIC_ACL
+        awk -f "$acl_patch" "$acl_file" > "$tmp_dir/acl.logging" ||
+            die "Не удалось обновить ACL rpcd для диагностического журнала."
+        grep -Fq '"get_logging"' "$tmp_dir/acl.logging" ||
+            die "ACL rpcd не разрешает чтение состояния журнала."
+        grep -Fq '"set_logging"' "$tmp_dir/acl.logging" ||
+            die "ACL rpcd не разрешает переключение журнала."
+        mv "$tmp_dir/acl.logging" "$acl_file" ||
+            die "Не удалось сохранить ACL rpcd для диагностического журнала."
+    fi
+
+    if ! grep -Fq 'callSetLogging' "$js_file"; then
+        ui_decl_patch="$tmp_dir/diagnostic-ui-declarations.awk"
+        cat > "$ui_decl_patch" <<'MDM_DIAGNOSTIC_UI_DECLARATIONS'
+{
+    if (index($0, "var STYLE = ") > 0 && !added) {
+        print "var callGetLogging = rpc.declare({"
+        print "    object: 'luci.my_device_manager',"
+        print "    method: 'get_logging',"
+        print "    params: []"
+        print "});"
+        print "var callSetLogging = rpc.declare({"
+        print "    object: 'luci.my_device_manager',"
+        print "    method: 'set_logging',"
+        print "    params: ['enabled']"
+        print "});"
+        print
+        added = 1
+    }
+    print
+}
+END { if (!added) exit 1 }
+MDM_DIAGNOSTIC_UI_DECLARATIONS
+        awk -f "$ui_decl_patch" "$js_file" > "$tmp_dir/main.logging-declarations.js" ||
+            die "Не удалось подключить RPC диагностического журнала к LuCI."
+        grep -Fq 'callGetLogging' "$tmp_dir/main.logging-declarations.js" ||
+            die "RPC чтения состояния журнала не подключён к LuCI."
+        grep -Fq 'callSetLogging' "$tmp_dir/main.logging-declarations.js" ||
+            die "RPC переключения журнала не подключён к LuCI."
+        mv "$tmp_dir/main.logging-declarations.js" "$js_file" ||
+            die "Не удалось сохранить RPC диагностического журнала в LuCI."
+    fi
+
+    if ! grep -Fq 'MDM_DIAGNOSTIC_LOG_UI' "$js_file"; then
+        ui_panel="$tmp_dir/diagnostic-log-panel.js"
+        ui_panel_patch="$tmp_dir/diagnostic-log-panel.awk"
+        cat > "$ui_panel" <<'MDM_DIAGNOSTIC_LOG_UI'
+            E('div', { 'class': 'cbi-section', 'style': 'margin:12px 0;padding:10px' }, [
+                E('strong', {}, 'Диагностика регистрации'),
+                E('p', { 'style': 'margin:6px 0' }, 'Журнал выключен по умолчанию и хранится только в оперативной памяти. Пароли Wi-Fi и имена устройств не записываются. После включения повтори регистрацию; журнал можно прочитать по SSH командой: cat /tmp/my-device-manager.log.'),
+                (function() {
+                    var button = E('button', { 'class': 'cbi-button cbi-button-action' }, 'Загрузка состояния журнала…');
+                    var busy = false;
+                    function updateLabel(enabled) {
+                        button.textContent = enabled ? 'Отключить логирование' : 'Включить логирование';
+                    }
+                    callGetLogging().then(function(state) {
+                        updateLabel(!!(state && state.enabled));
+                    }).catch(function() {
+                        button.textContent = 'Настроить логирование';
+                    });
+                    button.addEventListener('click', function() {
+                        if (busy)
+                            return;
+                        busy = true;
+                        button.disabled = true;
+                        callGetLogging().then(function(state) {
+                            return callSetLogging(state && state.enabled ? '0' : '1');
+                        }).then(function(result) {
+                            if (!result || result.ok === false)
+                                throw new Error('Не удалось изменить режим логирования.');
+                            var enabled = !!result.enabled;
+                            updateLabel(enabled);
+                            ui.addNotification(null, E('p', {}, enabled ?
+                                'Журнал включён. Повтори регистрацию, затем прочитай /tmp/my-device-manager.log по SSH.' :
+                                'Журнал выключен.'), 'info');
+                        }).catch(function(err) {
+                            ui.addNotification(null, E('p', {}, err && err.message ?
+                                err.message : 'Не удалось выполнить RPC-запрос к диагностическому журналу.'), 'error');
+                        }).then(function() {
+                            busy = false;
+                            button.disabled = false;
+                        });
+                    });
+                    return button;
+                })()
+            ]), // MDM_DIAGNOSTIC_LOG_UI
+MDM_DIAGNOSTIC_LOG_UI
+
+        cat > "$ui_panel_patch" <<'MDM_DIAGNOSTIC_PANEL_PATCH'
+{
+    if (index($0, "В режиме двух диапазонов выбор остаётся за клиентом.") > 0 && !added) {
+        print
+        while ((getline line < panel_file) > 0) print line
+        close(panel_file)
+        added = 1
+        next
+    }
+    print
+}
+END { if (!added) exit 1 }
+MDM_DIAGNOSTIC_PANEL_PATCH
+        awk -v panel_file="$ui_panel" -f "$ui_panel_patch" "$js_file" > "$tmp_dir/main.logging-panel.js" ||
+            die "Не удалось добавить переключатель логирования в интерфейс LuCI."
+        grep -Fq 'MDM_DIAGNOSTIC_LOG_UI' "$tmp_dir/main.logging-panel.js" ||
+            die "Переключатель логирования не обнаружен в интерфейсе."
+        if command -v node >/dev/null 2>&1; then
+            node --check "$tmp_dir/main.logging-panel.js" ||
+                die "Интерфейс диагностического журнала не прошёл проверку JavaScript."
+        fi
+        mv "$tmp_dir/main.logging-panel.js" "$js_file" ||
+            die "Не удалось сохранить интерфейс диагностического журнала."
+    fi
+
+    grep -Fq 'MDM_DIAGNOSTIC_LOG_HELPERS' "$backend_file" ||
+        die "Функции диагностического журнала отсутствуют."
+    grep -Fq 'MDM_DIAGNOSTIC_REGISTER_LOG' "$backend_file" ||
+        die "Журналирование регистрации отсутствует."
+    grep -Fq 'MDM_DIAGNOSTIC_ERROR_LOG' "$backend_file" ||
+        die "Журналирование ошибок RPC отсутствует."
+    grep -Fq '"get_logging":{}' "$backend_file" ||
+        die "Описание метода чтения состояния журнала отсутствует."
+    grep -Fq '"set_logging":{"enabled":"str"}' "$backend_file" ||
+        die "Описание метода переключения журнала отсутствует."
+    grep -Fq '"set_logging"' "$acl_file" ||
+        die "ACL rpcd не разрешает переключение журнала."
+    grep -Fq 'MDM_DIAGNOSTIC_LOG_UI' "$js_file" ||
+        die "Переключатель логирования отсутствует в LuCI."
+    sh -n "$backend_file" ||
+        die "RPC-обработчик диагностического журнала не прошёл проверку shell-синтаксиса."
+    chmod 0755 "$backend_file" ||
+        die "Не удалось выставить исполняемые права RPC-обработчика."
+}
+
+
 validate_payload() {
     [ -d "$package_dir" ] || die "В архиве отсутствует каталог приложения."
     [ -f "$package_dir/root/usr/share/luci/menu.d/luci-app-my-device-manager.json" ] ||
@@ -2021,8 +2349,9 @@ do_check() {
     apply_wifi_client_stats_patch
     apply_band_selection_patch
     apply_two_level_registration_patch
+    apply_diagnostics_logging_patch
     validate_payload
-    log "Проверка успешна: архив, DHCP/mDNS, UFP, статистика Wi-Fi, выбор диапазона и пометка незарегистрированных устройств корректны."
+    log "Проверка успешна: архив, DHCP/mDNS, UFP, статистика Wi-Fi, выбор диапазона, отметка незарегистрированных устройств и диагностический журнал корректны."
 }
 
 do_install() {
@@ -2039,6 +2368,7 @@ do_install() {
     apply_wifi_client_stats_patch
     apply_band_selection_patch
     apply_two_level_registration_patch
+    apply_diagnostics_logging_patch
     validate_payload
 
     mkdir -p "$STATE_DIR"
