@@ -1688,36 +1688,75 @@ apply_two_level_registration_patch() {
     [ -f "$js_file" ] || die "Не найден интерфейс для двухуровневой регистрации."
     [ -f "$acl_file" ] || die "Не найден ACL rpcd для DHCP-регистрации."
 
-    # The ordinary Register action stores only the My Device Manager record.
-    # Skip the fragile format validator for registry-only registration; DHCP retains its own checks.
-    if ! grep -Fq '# MDM_TWO_LEVEL_LOCAL_REGISTER' "$backend_file"; then
+    # Registry-only registration must bypass strict MAC validation before the
+    # first possible validation call, not after IP/request fields are parsed.
+    # DHCP registration remains validated by register_dhcp_locked().
+    if ! grep -Fq '# MDM_TWO_LEVEL_LOCAL_REGISTER_V2' "$backend_file"; then
         local_patch="$tmp_dir/registration-local.awk"
         cat > "$local_patch" <<'MDM_LOCAL_REGISTER'
 {
     if ($0 == "            register|rename)") in_register = 1
-    print
-    if (in_register && index($0, "requested_ip=$(read_arg ip)") > 0 && !added) {
+
+    if (in_register && index($0, "mac=$(read_arg mac)") > 0 && !validator_added) {
+        print
         print "                if [ \"$method\" = \"register\" ]; then"
-        print "                    requested_ip=\"\""
         print "                    mac_valid() { return 0; } # MDM_REGISTRY_SKIP_MAC_VALIDATOR"
-        print "                fi # MDM_TWO_LEVEL_LOCAL_REGISTER"
-        added = 1
+        print "                fi # MDM_REGISTRY_SKIP_MAC_VALIDATOR_EARLY"
+        validator_added = 1
+        next
     }
+
+    if (in_register && index($0, "requested_ip=$(read_arg ip)") > 0 && !ip_added) {
+        print
+        print "                if [ \"$method\" = \"register\" ]; then"
+        print "                    requested_ip=\"\" # MDM_TWO_LEVEL_LOCAL_REGISTER_V2"
+        print "                fi"
+        ip_added = 1
+        next
+    }
+
     if (in_register && $0 == "                ;;") in_register = 0
+    print
 }
-END { if (!added) exit 1 }
+END { if (!validator_added || !ip_added) exit 1 }
 MDM_LOCAL_REGISTER
         if ! awk -f "$local_patch" "$backend_file" > "$tmp_dir/backend.local-register"; then
-            grep -n -E 'register|read_arg ip|register_device' "$backend_file" | head -n 100 >&2 || true
+            grep -n -E 'register|read_arg mac|requested_ip|mac_valid' "$backend_file" | head -n 100 >&2 || true
             die "Не удалось отделить регистрацию в приложении от DHCP."
         fi
-        grep -Fq '# MDM_TWO_LEVEL_LOCAL_REGISTER' "$tmp_dir/backend.local-register" ||
+        grep -Fq '# MDM_REGISTRY_SKIP_MAC_VALIDATOR_EARLY' "$tmp_dir/backend.local-register" ||
+            die "Обход проверки MAC не установлен до валидации регистрации."
+        grep -Fq 'requested_ip="" # MDM_TWO_LEVEL_LOCAL_REGISTER_V2' "$tmp_dir/backend.local-register" ||
             die "Обычная регистрация всё ещё может передавать IP в DHCP."
+        awk '
+            $0 == "            register|rename)" { in_register=1 }
+            in_register && index($0, "MDM_REGISTRY_SKIP_MAC_VALIDATOR_EARLY") > 0 { guard=NR }
+            in_register && index($0, "mac_valid \"$mac\"") > 0 &&
+                index($0, "MDM_REGISTRY_SKIP_MAC_VALIDATOR") == 0 { validation=NR }
+            in_register && $0 == "                ;;" { in_register=0 }
+            END { if (!guard || (validation && guard >= validation)) exit 1 }
+        ' "$tmp_dir/backend.local-register" ||
+            die "Проверка порядка: обход проверки MAC должен предшествовать любой строгой проверке при обычной регистрации."
         sh -n "$tmp_dir/backend.local-register" ||
             die "RPC-обработчик локальной регистрации не прошёл проверку shell-синтаксиса."
         mv "$tmp_dir/backend.local-register" "$backend_file" ||
             die "Не удалось сохранить режим регистрации только в My Device Manager."
     fi
+
+    grep -Fq '# MDM_REGISTRY_SKIP_MAC_VALIDATOR_EARLY' "$backend_file" ||
+        die "Ранняя обработка регистрации отсутствует."
+    grep -Fq 'requested_ip="" # MDM_TWO_LEVEL_LOCAL_REGISTER_V2' "$backend_file" ||
+        die "Защита от создания DHCP-записи при обычной регистрации отсутствует."
+    awk '
+        $0 == "            register|rename)" { in_register=1 }
+        in_register && index($0, "MDM_REGISTRY_SKIP_MAC_VALIDATOR_EARLY") > 0 { guard=NR }
+        in_register && index($0, "mac_valid \"$mac\"") > 0 &&
+            index($0, "MDM_REGISTRY_SKIP_MAC_VALIDATOR") == 0 { validation=NR }
+        in_register && $0 == "                ;;" { in_register=0 }
+        END { if (!guard || (validation && guard >= validation)) exit 1 }
+    ' "$backend_file" ||
+        die "Проверка порядка регистрации MAC не пройдена."
+
 
     # The explicit DHCP action validates both the app registry and the static
     # lease target. It only edits /etc/config/dhcp and reloads dnsmasq.
