@@ -2352,8 +2352,8 @@ apply_registration_choice_ui_patch() {
             var canonicalMac = String(mac || '').trim();
             var createDhcp = window.confirm(
                 'Выбери способ регистрации:\n\n' +
-                'ОК — зарегистрировать в My Device Manager и создать DHCP-резервацию.\n' +
-                'Отмена — зарегистрировать только в My Device Manager. Уже существующие DHCP-записи не изменяются.'
+                'ОК — зарегистрировать в My Device Manager и создать DHCP-резервацию. Уже существующие DHCP-записи не дублируются.\n' +
+                'Отмена — зарегистрировать только в My Device Manager. Существующая DHCP-запись, если есть, не изменяется.'
             );
 
             if (!createDhcp)
@@ -2364,40 +2364,11 @@ apply_registration_choice_ui_patch() {
                 return;
             ip = ip.trim();
             if (!ip) {
-                ui.addNotification(null, E('p', {}, 'Для DHCP-резервации нужно указать IPv4-адрес. Устройство не потеряно: DHCP-регистрацию можно выполнить позже.'), 'error');
+                ui.addNotification(null, E('p', {}, 'Для DHCP-резервации нужно указать IPv4-адрес. Устройство не зарегистрировано — можно повторить попытку и выбрать регистрацию только в My Device Manager.'), 'error');
                 return;
             }
 
-            var registeredLocally = false;
-            return callRegister(canonicalMac, name, '').then(function(localResult) {
-                if (localResult && localResult.ok === false)
-                    return localResult;
-
-                registeredLocally = true;
-                return callRegisterDhcp(canonicalMac, ip, name);
-            }).then(function(result) {
-                if (result && result.ok === false) {
-                    var message = operationErrorMessage(result.error);
-                    if (registeredLocally) {
-                        message = 'Устройство добавлено в My Device Manager, но DHCP-резервация не создана. ' + message;
-                        ui.addNotification(null, E('p', {}, message), 'error');
-                        window.setTimeout(function() { window.location.reload(); }, 1800);
-                    }
-                    else {
-                        ui.addNotification(null, E('p', {}, message), 'error');
-                    }
-                    return;
-                }
-
-                window.location.reload();
-            }).catch(function(err) {
-                var message = rpcErrorMessage(err);
-                if (registeredLocally) {
-                    message = 'Устройство добавлено в My Device Manager, но DHCP-регистрация не завершена. ' + message;
-                    window.setTimeout(function() { window.location.reload(); }, 1800);
-                }
-                ui.addNotification(null, E('p', {}, message), 'error');
-            });
+            return refreshAfter(callRegister(canonicalMac, name, ip));
         }
 MDM_REGISTRATION_CHOICE_HELPER
 
@@ -2469,8 +2440,8 @@ MDM_REGISTRATION_CHOICE_UI
             die "Не удалось обновить интерфейс способа регистрации и состояний устройств."
         grep -Fq 'function registerWithChoice(mac, name, suggestedIp)' "$tmp_dir/main.registration-choice.js" ||
             die "Функция выбора способа регистрации не найдена."
-        grep -Fq 'callRegisterDhcp(canonicalMac, ip, name)' "$tmp_dir/main.registration-choice.js" ||
-            die "Создание DHCP-резервации не подключено к выбору способа регистрации."
+        grep -Fq 'callRegister(canonicalMac, name, ip)' "$tmp_dir/main.registration-choice.js" ||
+            die "Выбор регистрации с DHCP не подключён к транзакции реестра и DHCP."
         grep -Fq 'Устройство не зарегистрировано' "$tmp_dir/main.registration-choice.js" ||
             die "В интерфейсе отсутствует состояние незарегистрированного устройства."
         grep -Fq 'My Device Manager + DHCP' "$tmp_dir/main.registration-choice.js" ||
