@@ -2196,6 +2196,10 @@ MDM_LOCAL_REGISTRY_HELPER
         next
     }
 
+    if ($0 == "                fi # MDM_TWO_LEVEL_LOCAL_REGISTER") {
+        next
+    }
+
     if ($0 == "                if [ \"$method\" = \"register\" ]; then") {
         print "                register_local_only=0"
         print "                if [ \"$method\" = \"register\" ] && [ -z \"$requested_ip\" ]; then"
