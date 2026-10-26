@@ -2452,7 +2452,7 @@ apply_simple_band_only_patch() {
     if ! grep -Fq '# MDM_BAND_ONLY_PROFILE_V1' "$backend_file"; then
         [ "$(grep -Fc 'band_mode_apply_locked() {' "$backend_file" || true)" = "1" ] ||
             die "Не найдена функция применения диапазона для режима без регистрации."
-        [ "$(grep -Fc 'section=$(section_for_mac "$mac")' "$backend_file" || true)" = "1" ] ||
+        grep -Fq 'section=$(section_for_mac "$mac")' "$backend_file" ||
             die "Не найдено место для чтения предпочтения диапазона."
         [ "$(grep -Fc 'band_remove_acl_entries "$section" "$mac" || {' "$backend_file" || true)" = "1" ] ||
             die "Не найдено безопасное место для сохранения настройки диапазона."
