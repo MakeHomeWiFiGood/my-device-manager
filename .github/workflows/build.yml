@@ -33,6 +33,19 @@ jobs:
           test -f "$RUNNER_TEMP/mdm-source/luci-app-my-device-manager/root/usr/share/luci/menu.d/luci-app-my-device-manager.json"
           test -f "$RUNNER_TEMP/mdm-source/luci-app-my-device-manager/root/usr/share/rpcd/acl.d/luci-app-my-device-manager.json"
 
+      - name: Inspect RPC registration parser (temporary diagnostic)
+        if: contains(github.event.head_commit.message, '[diagnostic]')
+        shell: bash
+        run: |
+          set -euo pipefail
+          backend="$RUNNER_TEMP/mdm-source/luci-app-my-device-manager/root/usr/libexec/rpcd/luci.my_device_manager"
+          echo '=== Base read_arg/input handling ==='
+          grep -n -E 'input=|read input|read -r input|read_arg\(\)|name_required' "$backend" || true
+          echo '=== Base registration handler ==='
+          grep -n -A55 -B15 -E 'register\|rename\)' "$backend" || true
+          echo '=== Base RPC schema ==='
+          grep -n -A3 -B3 -E '"register"|"rename"' "$backend" || true
+
       - name: Validate installer and prepare download artifact
         shell: bash
         run: |
@@ -72,7 +85,7 @@ jobs:
           retention-days: 30
 
       - name: Publish My Device Manager v0.2.21 — opt-in registration diagnostics
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && !contains(github.event.head_commit.message, '[diagnostic]')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v0.2.21
