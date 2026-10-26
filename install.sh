@@ -2344,8 +2344,8 @@ MDM_DIAGNOSTIC_UI_DECLARATIONS
         ui_panel_patch="$tmp_dir/diagnostic-log-panel.awk"
         cat > "$ui_panel" <<'MDM_DIAGNOSTIC_LOG_UI'
             E('div', { 'class': 'cbi-section', 'style': 'margin:12px 0;padding:10px' }, [
-                E('strong', {}, 'Диагностика регистрации'),
-                E('p', { 'style': 'margin:6px 0' }, 'Режим отладки включён по умолчанию и хранится только в оперативной памяти. Пароли Wi-Fi и имена устройств не записываются. Повтори регистрацию, затем прочитай журнал по SSH: cat /tmp/my-device-manager.log. После явного отключения журнал останется выключенным до перезагрузки.'),
+                E('strong', {}, 'Диагностика My Device Manager'),
+                E('p', { 'style': 'margin:6px 0' }, 'Режим отладки включён по умолчанию и хранится только в оперативной памяти. Пароли Wi-Fi и имена устройств не записываются. После проблемного действия прочитай журнал по SSH: cat /tmp/my-device-manager.log. После явного отключения журнал останется выключенным до перезагрузки.'),
                 (function() {
                     var button = E('button', { 'class': 'cbi-button cbi-button-action' }, 'Загрузка состояния журнала…');
                     var busy = false;
@@ -2370,7 +2370,7 @@ MDM_DIAGNOSTIC_UI_DECLARATIONS
                             var enabled = !!result.enabled;
                             updateLabel(enabled);
                             ui.addNotification(null, E('p', {}, enabled ?
-                                'Журнал включён. Повтори регистрацию, затем прочитай /tmp/my-device-manager.log по SSH.' :
+                                'Журнал включён. Повтори действие, вызвавшее ошибку, затем прочитай /tmp/my-device-manager.log по SSH.' :
                                 'Журнал выключен.'), 'info');
                         }).catch(function(err) {
                             ui.addNotification(null, E('p', {}, err && err.message ?
@@ -2387,7 +2387,7 @@ MDM_DIAGNOSTIC_LOG_UI
 
         cat > "$ui_panel_patch" <<'MDM_DIAGNOSTIC_PANEL_PATCH'
 {
-    if (index($0, "В режиме двух диапазонов выбор остаётся за клиентом.") > 0 && !added) {
+    if (index($0, "При выборе обоих диапазонов клиент сам решает, к какому подключаться.") > 0 && !added) {
         print
         while ((getline line < panel_file) > 0) print line
         close(panel_file)
