@@ -50,10 +50,10 @@ jobs:
           cp install.sh artifacts/install.sh
           sha256sum artifacts/install.sh > artifacts/install.sh.sha256
           cat > artifacts/INSTALL.txt <<'EOF'
-          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.20)
+          My Device Manager — direct installer for OpenWrt 25.12.x (v0.2.21)
           
           Run as root:
-            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.20/install.sh
+            wget -O /root/mdm-install.sh https://github.com/MakeHomeWiFiGood/my-device-manager/releases/download/v0.2.21/install.sh
             sh /root/mdm-install.sh install
           
           To remove the installed app and restore files backed up by the installer:
@@ -71,13 +71,13 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish My Device Manager v0.2.20 — BusyBox MAC normalization fix
+      - name: Publish My Device Manager v0.2.21 — opt-in registration diagnostics
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.2.20
+          tag_name: v0.2.21
           target_commitish: ${{ github.sha }}
-          name: My Device Manager v0.2.20 — BusyBox MAC normalization fix
+          name: My Device Manager v0.2.21 — opt-in registration diagnostics
           overwrite_files: true
           generate_release_notes: true
           files: artifacts/*
@@ -92,6 +92,11 @@ jobs:
             The first “Зарегистрировать” action stores the client only in the My Device Manager registry and normalizes common MAC notations before the record is written. This release replaces older MAC normalizers instead of trusting an existing version marker, and adds explicit output when a normalization test fails. The separate “Зарегистрировать DHCP-запись” action retains MAC/IP validation
             and reservation conflict checks. Its button is shown only for registered devices with an IP address and is omitted when a static reservation already exists. MAC input accepts common colon/hyphen/dot, compact, upper/lowercase and surrounding-whitespace variants after normalization.
             Fixes installer validation by forcibly upgrading the normalizer implementation and testing uppercase, lowercase, colon, hyphen, dotted, compact and surrounding-whitespace forms with diagnostic output on failure.
+            Adds an opt-in registration diagnostics toggle in LuCI. When enabled, the RPC backend
+            records the normalized MAC for registration attempts and internal error codes in
+            /tmp/my-device-manager.log. The log is RAM-only, capped, cleared when diagnostics are enabled
+            again, and does not contain device names, IP addresses or Wi-Fi passwords. Logging is disabled
+            by default and does not persist across a reboot.
             Adds persistent per-device Wi-Fi band selection for registered devices:
             2.4 GHz only, 5 GHz only, or both bands without an MDM-created restriction
             (the client chooses its band). Unregistered clients are marked
