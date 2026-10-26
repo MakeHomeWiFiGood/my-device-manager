@@ -42,6 +42,9 @@ jobs:
           grep -n -E -B 5 -A 8 "callRegister|registerButton|method: ['\"]register|callSetBandMode|set_band_mode|rpc\.declare" "$JS" | head -n 220 || true
           printf '\n=== SOURCE BACKEND: register dispatch and argument parsing ===\n'
           grep -n -E -B 5 -A 12 "read_arg\(\)|register\|rename\)|set_band_mode\)|mac_valid|name_required" "$BACKEND" | head -n 220 || true
+          printf '\\n=== SOURCE BACKEND ENTRYPOINT AND RPC SCHEMA ===\\n'
+          sed -n '630,710p' "$BACKEND"
+          grep -n -E -B 2 -A 3 '"register"|"rename"|"unregister"' "$BACKEND" | tail -n 60 || true
 
 
       - name: Validate installer and prepare download artifact
